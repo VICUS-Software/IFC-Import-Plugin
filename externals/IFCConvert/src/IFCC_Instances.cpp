@@ -306,6 +306,11 @@ void Instances::addToVicusProject(VICUS::Project* project, const Database& datab
 	for(const auto& ci : m_componentInstances) {
 		int sideA = ci.second.sideASurfaceId();
 		int sideB = ci.second.sideBSurfaceId();
+		// Skip instances with two invalid surface references.
+		if(sideA < 0 && sideB < 0) {
+			++skippedNormal;
+			continue;
+		}
 		if(sideA >= 0 && validSurfaceIds.find((unsigned int)sideA) == validSurfaceIds.end()) {
 			++skippedNormal;
 			continue;
@@ -323,6 +328,11 @@ void Instances::addToVicusProject(VICUS::Project* project, const Database& datab
 	for(const auto& sci : m_subSurfaceComponentInstances) {
 		int sideA = sci.second.sideASurfaceId();
 		int sideB = sci.second.sideBSurfaceId();
+		// Skip instances with two invalid surface references.
+		if(sideA < 0 && sideB < 0) {
+			++skippedSub;
+			continue;
+		}
 		if(sideA >= 0 && validSubSurfaceIds.find((unsigned int)sideA) == validSubSurfaceIds.end()) {
 			++skippedSub;
 			continue;
