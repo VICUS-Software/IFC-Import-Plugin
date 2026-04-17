@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>900</width>
-    <height>600</height>
+    <width>946</width>
+    <height>711</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -45,6 +45,18 @@
    <item>
     <widget class="QWidget" name="widgetConvert" native="true">
      <layout class="QVBoxLayout" name="verticalLayoutConvert">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
       <item>
        <widget class="QLabel" name="labelSectionScenario">
         <property name="font">
@@ -83,6 +95,11 @@
       </item>
       <item>
        <widget class="QRadioButton" name="radioButtonScenarioMedium">
+        <property name="font">
+         <font>
+          <bold>true</bold>
+         </font>
+        </property>
         <property name="text">
          <string>Medium matching (Recommended)</string>
         </property>

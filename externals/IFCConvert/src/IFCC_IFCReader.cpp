@@ -937,8 +937,31 @@ QStringList IFCReader::messages() const {
 
 QStringList IFCReader::statistic() const {
 	QStringList result;
-	result << tr("Statistic:<br>");
+
+	// --- Overview ---
+	result << tr("Overview:<br>");
 	result << tr("%1 buildings.<br>").arg(m_site.m_buildings.size());
+	int totalStoreys = 0;
+	int totalSpaces = 0;
+	int totalSpaceBoundaries = 0;
+	for(const auto& building : m_site.m_buildings) {
+		totalStoreys += (int)building->storeys().size();
+		for(const auto& storey : building->storeys()) {
+			totalSpaces += (int)storey->spaces().size();
+			for(const auto& space : storey->spaces())
+				totalSpaceBoundaries += (int)space->spaceBoundaries().size();
+		}
+	}
+	result << tr("%1 storeys.<br>").arg(totalStoreys);
+	result << tr("%1 spaces.<br>").arg(totalSpaces);
+	result << tr("%1 space boundaries.<br>").arg(totalSpaceBoundaries);
+	result << tr("%1 materials.<br>").arg(m_database.m_materials.size());
+	result << tr("%1 constructions.<br>").arg(m_database.m_constructions.size());
+	result << tr("%1 windows.<br>").arg(m_database.m_windows.size());
+	result << tr("%1 window glazings.<br>").arg(m_database.m_windowGlazings.size());
+
+	// --- Detailed building structure ---
+	result << tr("<br>Details:<br>");
 	for(const auto& building : m_site.m_buildings) {
 		result << tr("Building %1 with %2 storeys.<br>").arg(QString::fromStdString(building->m_name))
 				.arg(building->storeys().size());
@@ -964,48 +987,35 @@ QStringList IFCReader::statistic() const {
 			}
 		}
 	}
-	result << "<br>Databases<br>";
-	result << tr("\t%1 materials<br>").arg(m_database.m_materials.size());
+
+	// --- Detailed database contents ---
+	result << tr("<br>Databases:<br>");
+	result << tr("  Materials:<br>");
 	for(const auto& mat : m_database.m_materials) {
 		result << tr("    %1 - id %2<br>").arg(QString::fromStdString(mat.second.m_name)).arg(mat.first);
 	}
-	result << tr("  %1 constructions<br>").arg(m_database.m_constructions.size());
+	result << tr("  Constructions:<br>");
 	for(const auto& con : m_database.m_constructions) {
 		result << tr("    Construction id %1 with %2 layers<br>").arg(con.first).arg(con.second.m_layers.size());
 	}
-	result << tr("  %1 windows<br>").arg(m_database.m_windows.size());
+	result << tr("  Windows:<br>");
 	for(const auto& win : m_database.m_windows) {
 		result << tr("    Window %1 id %2<br>").arg(QString::fromStdString(win.second.m_name)).arg(win.first);
 	}
-	result << tr("  %1 windows<br>").arg(m_database.m_windowGlazings.size());
+	result << tr("  Window glazings:<br>");
 	for(const auto& wgl : m_database.m_windowGlazings) {
-		result << tr("    Window %1 id %2<br>").arg(QString::fromStdString(wgl.second.m_name)).arg(wgl.first);
+		result << tr("    Window glazing %1 id %2<br>").arg(QString::fromStdString(wgl.second.m_name)).arg(wgl.first);
 	}
 
-	result << QString() << tr("Space boundary list <br>") << QString();
+	// --- Space boundary list ---
+	result << QString() << tr("<br>Space boundary list:<br>") << QString();
 
 	std::vector<std::shared_ptr<SpaceBoundary>> spaceBoundaries = m_site.allSpaceBoundaries();
-	std::vector<SpaceBoundaryEvaluation> sbEvals;
 	for(const auto& sb : spaceBoundaries) {
-		SpaceBoundaryEvaluation sbEval;
-		if(sb->isConstructionElement())
-			sbEval.m_type = SpaceBoundaryEvaluation::Construction;
-		else if(sb->isOpeningElement())
-			sbEval.m_type = SpaceBoundaryEvaluation::Opening;
-		else if(sb->isVirtual())
-			sbEval.m_type = SpaceBoundaryEvaluation::Virtual;
-		else if(sb->isMissing())
-			sbEval.m_type = SpaceBoundaryEvaluation::Missing;
-		else {
-			sbEval.m_type = SpaceBoundaryEvaluation::Unknown;
-		}
-		sbEval.m_name = QString::fromStdString(sb->m_name);
-		sbEval.m_nameRelatedElement = QString::fromStdString(sb->nameRelatedElement());
-		sbEval.m_nameRelatedSpace = QString::fromStdString(sb->nameRelatedSpace());
-		sbEval.m_typeRelatedElement = sb->typeRelatedElement();
-		QString text = sbEval.m_name + "\tis a " + QString::fromStdString(objectTypeToString(sb->typeRelatedElement()));
-		text += "  connected with: " + sbEval.m_nameRelatedElement;
-		text += "  contained in: " + sbEval.m_nameRelatedSpace;
+		QString text = QString::fromStdString(sb->m_name)
+			+ "\tis a " + QString::fromStdString(objectTypeToString(sb->typeRelatedElement()))
+			+ "  connected with: " + QString::fromStdString(sb->nameRelatedElement())
+			+ "  contained in: " + QString::fromStdString(sb->nameRelatedSpace());
 		result << text + "<br>";
 	}
 
