@@ -57,8 +57,7 @@ jobs:
         python -m aqt install-qt windows desktop ${{ env.QT_DETAILED_VERSION }} win64_msvc${{ env.VC_VERSION }}_64 `
             --archives qtbase qtsvg qtlocation qtdeclarative `
             --modules qtpositioning `
-            --outputdir qt `
-            --external 7z
+            --outputdir qt
     
         # Set Qt bin to PATH
         $qt_bin = "$PWD\qt\${{ env.QT_DETAILED_VERSION }}\msvc${{ env.VC_VERSION }}_64\bin"
