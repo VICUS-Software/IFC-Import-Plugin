@@ -38,6 +38,18 @@ public:
 	double							m_minimumSurfaceArea = 0.01;
 	double							m_distanceEps = 1e-3;
 	double							m_polygonEps = 1e-4;
+	/*! AABB overlap tolerance [m] used by the fast matching prefilter.
+		Independent of m_distanceEps, which governs plane-parallelism tests. */
+	double							m_aabbExpandEps = 0.05;
+	/*! If true, a candidate construction surface must face the space surface
+		(dot(normal_space, normal_constr) < 0) and the space centroid must sit on the
+		opposite side of the construction plane from where its normal points.
+		Default OFF: many real-world IFCs author normals inconsistently, and enabling
+		this filter can silently reject valid wall pairings, producing "Missing" SBs
+		where walls should be. Opt-in for IFCs that are known to have clean normals. */
+	bool							m_requireOppositeNormals = false;
+	/*! Upper bound on the iterative subdivision loop in createSpaceBoundaries_2. */
+	int								m_maxMatchIterations = 500;
 	bool							m_createMissingSite = true;
 	bool							m_writeConstructionElements = false;
 	bool							m_writeBuildingElements = false;

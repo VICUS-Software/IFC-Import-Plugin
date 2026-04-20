@@ -57,7 +57,10 @@ namespace IFCC {
 static ProgressHandler makeSubRange(IBK::NotificationHandler* parent, double rangeStart, double rangeEnd) {
 	return ProgressHandler([parent](int v, QString t) {
 		if(parent) {
-			const char* text = t.isEmpty() ? nullptr : t.toUtf8().constData();
+			// Keep the QByteArray alive for the duration of the notify call —
+			// otherwise its backing buffer is freed before notify reads from it.
+			QByteArray utf8 = t.toUtf8();
+			const char* text = t.isEmpty() ? nullptr : utf8.constData();
 			parent->notify(double(v) / 100.0, text);
 		}
 	}, rangeStart, rangeEnd);

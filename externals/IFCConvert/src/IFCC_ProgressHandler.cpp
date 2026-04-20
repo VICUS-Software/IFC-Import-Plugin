@@ -17,18 +17,7 @@ void ProgressHandler::notify() {
 }
 
 void ProgressHandler::notify(double percentage) {
-	percentage = std::max(0.0, std::min(1.0, percentage));
-	double globalFraction = m_rangeStart + percentage * (m_rangeEnd - m_rangeStart);
-	int globalPct = static_cast<int>(globalFraction * 100.0);
-	globalPct = std::max(0, std::min(100, globalPct));
-
-	// throttle: skip if less than 1% change
-	if (globalPct == m_lastReported)
-		return;
-
-	m_lastReported = globalPct;
-	if (m_callback)
-		m_callback(globalPct, QString());
+	notify(percentage, nullptr);
 }
 
 void ProgressHandler::notify(double percentage, const char* text) {
@@ -37,13 +26,14 @@ void ProgressHandler::notify(double percentage, const char* text) {
 	int globalPct = static_cast<int>(globalFraction * 100.0);
 	globalPct = std::max(0, std::min(100, globalPct));
 
-	// throttle: skip if less than 1% change and no text
-	if(globalPct == m_lastReported && (text == nullptr || text[0] == '\0'))
+	bool hasText = (text != nullptr && text[0] != '\0');
+	// throttle: skip only if percentage is unchanged AND no status text is provided
+	if (globalPct == m_lastReported && !hasText)
 		return;
 
 	m_lastReported = globalPct;
-	QString qtext = (text != nullptr) ? QString::fromUtf8(text) : QString();
-	if(m_callback)
+	QString qtext = hasText ? QString::fromUtf8(text) : QString();
+	if (m_callback)
 		m_callback(globalPct, qtext);
 }
 

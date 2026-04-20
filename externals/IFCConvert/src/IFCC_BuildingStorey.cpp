@@ -6,8 +6,13 @@
 
 #include <Carve/src/include/carve/carve.hpp>
 
+#include <algorithm>
+
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
+#include "IFCC_Surface.h"
+#include "IFCC_BuildingElement.h"
+#include "IFCC_Cancellation.h"
 
 namespace IFCC {
 
@@ -118,18 +123,37 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 		std::vector<std::vector<std::shared_ptr<SpaceBoundary>>> perSpaceSBs(nSpaces);
 		std::vector<std::vector<ConvertError>> perSpaceErrors(nSpaces);
 
-		// Phase 1: parallel construction space boundary creation
-		// NO notify() calls inside OMP parallel region (triggers processEvents)
-		#pragma omp parallel for schedule(dynamic)
-		for(int j = 0; j < (int)nSpaces; ++j) {
-			perSpaceSBs[j] = m_spaces[constructionIndices[j]]->createConstructionSpaceBoundaries(
-				buildingElements, perSpaceErrors[j], convertOptions);
+		// Pre-warm AABB caches on all construction-element surfaces once, serially, so that
+		// the parallel Phase 1 below reads the cached values race-free.
+		for(const auto& construction : buildingElements.allConstructionElements()) {
+			for(const Surface& s : construction->surfaces()) {
+				s.aabbMin();
+				s.aabbMax();
+			}
 		}
 
-		// Report Phase 1 completion (half credit for construction spaces)
-		completed += nSpaces / 2;
-		if(notify && totalSpaces > 0)
-			notify->notify(double(completed) / double(totalSpaces), "Matching openings");
+		// Phase 1: parallel construction space boundary creation, chunked so the main thread
+		// can emit progress notifications between chunks (notify must not be called from
+		// inside the OMP parallel region — it invokes Qt processEvents on worker threads).
+		const int targetTicks = 20;
+		int chunk = std::max(1, (int)((nSpaces + targetTicks - 1) / targetTicks));
+		// "Phase 1 half credit" is distributed across chunks so the bar moves continuously.
+		size_t phase1Budget = nSpaces / 2;
+		for(int chunkStart = 0; chunkStart < (int)nSpaces; chunkStart += chunk) {
+			if(Cancellation::isCancelled())
+				break;
+			int chunkEnd = std::min(chunkStart + chunk, (int)nSpaces);
+			#pragma omp parallel for schedule(dynamic)
+			for(int j = chunkStart; j < chunkEnd; ++j) {
+				perSpaceSBs[j] = m_spaces[constructionIndices[j]]->createConstructionSpaceBoundaries(
+					buildingElements, perSpaceErrors[j], convertOptions);
+			}
+			if(notify && totalSpaces > 0) {
+				size_t chunkCompleted = completed + (size_t)chunkEnd * phase1Budget / nSpaces;
+				notify->notify(double(chunkCompleted) / double(totalSpaces), "Matching constructions");
+			}
+		}
+		completed += phase1Budget;
 
 		// Merge Phase 1 errors
 		for(auto& errs : perSpaceErrors)
@@ -137,11 +161,13 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 
 		// Phase 2: sequential opening matching and finalization - per-space notify
 		for(size_t j = 0; j < nSpaces; ++j) {
+			if(Cancellation::isCancelled())
+				break;
 			m_spaces[constructionIndices[j]]->finalizeConstructionSpaceBoundaries(
 				perSpaceSBs[j], buildingElements, openings, errors, convertOptions);
 			++completed;
 			if(notify && totalSpaces > 0)
-				notify->notify(double(completed) / double(totalSpaces));
+				notify->notify(double(completed) / double(totalSpaces), "Finalizing space boundaries");
 		}
 	}
 }

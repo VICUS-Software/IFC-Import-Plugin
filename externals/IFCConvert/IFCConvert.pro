@@ -119,6 +119,7 @@ HEADERS +=  \
 	src/IFCC_ProfileCache.h \
 	src/IFCC_ProfileConverter.h \
 	src/IFCC_ProgressHandler.h \
+	src/IFCC_Cancellation.h \
 	src/IFCC_Project.h \
 	src/IFCC_Property.h \
 	src/IFCC_RepresentationHelper.h \

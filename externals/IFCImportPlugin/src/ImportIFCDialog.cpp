@@ -7,6 +7,7 @@
 
 #include <IFCC_IFCReader.h>
 #include <IFCC_Helper.h>
+#include <IFCC_Cancellation.h>
 
 ImportIFCDialog::ImportIFCDialog(QWidget *parent, IFCC::IFCReader* reader) :
 	QDialog(parent),
@@ -117,6 +118,7 @@ void ImportIFCDialog::on_pushButtonConvert_clicked() {
 	initElements();
 	bool useSpaceBoundaries = (m_scenario == CS_UseSpaceBoundaries);
 
+	IFCC::Cancellation::reset();
 	IFCC::ProgressHandler convertHandler([this](int v, QString t) { setProgress(v, t); }, 0.0, 1.0);
 	m_progressDialog->show();
 	m_convertSuccessfully = m_reader->convert(useSpaceBoundaries, &convertHandler);
@@ -546,5 +548,8 @@ void ImportIFCDialog::setProgress(int val, QString text) {
 		if(val >= 100)
 			m_progressDialog->reset();
 		QApplication::processEvents();
+		// Relay user's Abort click to worker code via the pipeline-wide cancellation flag.
+		if(m_progressDialog->wasCanceled())
+			IFCC::Cancellation::set(true);
 	}
 }

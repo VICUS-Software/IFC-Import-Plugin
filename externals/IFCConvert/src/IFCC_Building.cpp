@@ -119,7 +119,10 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 
 		if(notify) {
 			ProgressHandler storeyHandler([notify](int v, QString t) {
-				const char* text = t.isEmpty() ? nullptr : t.toUtf8().constData();
+				// Keep the QByteArray alive for the duration of the notify call —
+				// otherwise its backing buffer is freed before notify reads from it.
+				QByteArray utf8 = t.toUtf8();
+				const char* text = t.isEmpty() ? nullptr : utf8.constData();
 				notify->notify(double(v) / 100.0, text);
 			}, rangeStart, rangeEnd);
 			m_storeys[si]->updateSpaces(elementShapes, unit_converter, buildingElements,

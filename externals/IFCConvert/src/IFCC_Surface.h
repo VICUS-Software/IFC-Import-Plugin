@@ -225,7 +225,37 @@ public:
 
 	/*! Check if the polygon is valid and ready to write or export.*/
 	bool check(double epsilon) const;
+
+	/*! Return cached axis-aligned bounding box minimum corner (lazy).
+		Not thread-safe on first call — call once per surface serially before parallel use. */
+	const IBKMK::Vector3D& aabbMin() const;
+
+	/*! Return cached axis-aligned bounding box maximum corner (lazy). */
+	const IBKMK::Vector3D& aabbMax() const;
+
+	/*! True if this surface's AABB overlaps the other's AABB, expanded by eps on each side. */
+	bool aabbOverlaps(const Surface& other, double eps) const;
+
+	/*! Return the unit-length plane normal as a Vector3D (derived from the carve plane).
+		Sign follows the carve plane convention — two co-planar surfaces facing each other
+		have dot(n1, n2) < 0. */
+	IBKMK::Vector3D planeNormalVec() const;
+
+	/*! Return cached Hesse-normal-form plane representation (lazy, computed from m_polyVect). */
+	const PlaneHesseNormal& cachedHesse() const;
+
+	/*! Return the arithmetic mean of the polygon vertices (lazy). */
+	const IBKMK::Vector3D& centroid() const;
 private:
+	/*! Compute and cache m_aabbMin / m_aabbMax from m_polyVect. Called on first access. */
+	void ensureAabb() const;
+
+	/*! Compute and cache the Hesse normal form. Called on first access. */
+	void ensureHesse() const;
+
+	/*! Compute and cache centroid (polygon vertex average). */
+	void ensureCentroid() const;
+
 
 	/*! Write the surface in old vicus xml format including all subsurfaces.*/
 	TiXmlElement * writeXMLOld(TiXmlElement * parent, const ConvertOptions& options) const;
@@ -246,6 +276,16 @@ private:
 	carve::geom::plane<3>					m_planeCarve;
 	PlaneNormal								m_planeNormal;
 	bool									m_canWriteSurface = false;
+
+	mutable IBKMK::Vector3D					m_aabbMin;
+	mutable IBKMK::Vector3D					m_aabbMax;
+	mutable bool							m_aabbValid = false;
+
+	mutable PlaneHesseNormal				m_hesseCached;
+	mutable bool							m_hesseValid = false;
+
+	mutable IBKMK::Vector3D					m_centroidCached;
+	mutable bool							m_centroidValid = false;
 };
 
 

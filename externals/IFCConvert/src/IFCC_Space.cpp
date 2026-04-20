@@ -6,6 +6,10 @@
 
 #include <numeric>
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <deque>
+#include <limits>
 
 #include <IBK_math.h>
 #include <IBK_FormatString.h>
@@ -17,6 +21,7 @@
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
 #include "IFCC_RepresentationHelper.h"
+#include "IFCC_Cancellation.h"
 
 namespace IFCC {
 
@@ -275,11 +280,16 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries(const B
 }
 
 struct ConstructionSurfaceInfo {
-	int						m_id = -1;
-	int						m_surfaceIndex = -1;
-	BuildingElementTypes	m_type = IFCC::BET_None;
-	double					m_distance = 0;
-	double					m_intersectionArea = 0;
+	int								m_id = -1;
+	int								m_surfaceIndex = -1;
+	BuildingElementTypes			m_type = IFCC::BET_None;
+	double							m_distance = 0;
+	double							m_intersectionArea = 0;
+
+	/*! Cached result of intersect2 from the prefilter. Reused by the caller to avoid
+		running the expensive Boolean operation twice on the same pair. */
+	Surface::IntersectionResult		m_intersectionResult;
+	bool							m_hasCachedIntersection = false;
 
 	bool isValid() const { return m_id > -1; }
 };
@@ -289,43 +299,145 @@ struct SpaceSurfaceMatches {
 	std::vector<ConstructionSurfaceInfo>	m_constructions;
 };
 
-static ConstructionSurfaceInfo findFirstSurfaceMatchIndex_2(const std::vector<Surface>& constructionSurfaces, const Surface& spaceSurface, double minDist,
-															const ConvertOptions& convertOptions) {
-	const double EPS = convertOptions.m_distanceEps;
+// Orientation bucket for a plane normal. 0=X-dominant, 1=Y-dominant, 2=Z-dominant, 3=sloped.
+static int classifyOrientation(const IBKMK::Vector3D& n) {
+	double ax = std::fabs(n.m_x);
+	double ay = std::fabs(n.m_y);
+	double az = std::fabs(n.m_z);
+	// Threshold 0.9 keeps only near-axis-aligned surfaces in X/Y/Z buckets.
+	// Anything more tilted lands in the sloped bucket and is tested against everything.
+	const double AXIS_THRESHOLD = 0.9;
+	if(ax >= AXIS_THRESHOLD && ax >= ay && ax >= az) return 0;
+	if(ay >= AXIS_THRESHOLD && ay >= ax && ay >= az) return 1;
+	if(az >= AXIS_THRESHOLD && az >= ax && az >= ay) return 2;
+	return 3;
+}
 
-	// collects all
-	std::vector<ConstructionSurfaceInfo> matches;
-	for(size_t wi=0; wi<constructionSurfaces.size(); ++wi) {
-		const Surface& constructionSurface = constructionSurfaces[wi];
-		if(spaceSurface.isParallelTo(constructionSurface, convertOptions.m_distanceEps)) {
-			double dist = spaceSurface.distanceToParallelPlane(constructionSurface, convertOptions.m_distanceEps);
-			if(dist < minDist * (1+EPS)) {
-				Surface intersection = spaceSurface.intersect(constructionSurface);
-				double area = intersection.area();
-				if(intersection.isValid(convertOptions.m_distanceEps) && area > convertOptions.m_minimumSurfaceArea) {
-					ConstructionSurfaceInfo	conInfo;
-					conInfo.m_id = 0;				// set to 0 indicates we have found something. Real id will be set later
-					conInfo.m_distance = dist;
-					conInfo.m_intersectionArea = area;
-					conInfo.m_surfaceIndex = wi;	// Index of surface in construction surface list
-					matches.push_back(conInfo);
-				}
+// Flat index entry over all construction surfaces — populated once per createSpaceBoundaries_2 call.
+// Stores (constrElementIdx, surfaceIdx) rather than a raw Surface pointer so the entry
+// remains valid even if construction surface vectors are copied/moved elsewhere.
+struct IndexedConstrSurface {
+	int							m_constructionElementIdx;	///< Index into the outer constructionElements vector
+	int							m_constructionSurfaceIdx;	///< Surface index within construction->surfaces()
+	int							m_constructionId;			///< Real id used by buildingElements.fromID
+	double						m_threshDist;				///< Plane-distance threshold for this construction (thickness × factor)
+	BuildingElementTypes		m_type;
+};
+
+// Weighted score used to pick the single best matching construction surface for a given space surface.
+// Lower score = better match. Combines normalized area (bigger = better), distance (smaller = better),
+// and a type-priority penalty (walls/roofs preferred over beams/coverings).
+static double matchScore(const ConstructionSurfaceInfo& c, double maxArea, double maxDist) {
+	double areaScore = (maxArea > 0.0) ? (maxArea - c.m_intersectionArea) / maxArea : 0.0;
+	double distScore = (maxDist > 0.0) ? (c.m_distance / maxDist) : 0.0;
+	double typeScore;
+	switch(c.m_type) {
+		case BET_Wall:
+		case BET_Roof:		typeScore = 0.0; break;
+		case BET_Slab:		typeScore = 0.1; break;
+		case BET_Beam:
+		case BET_Covering:	typeScore = 0.5; break;
+		default:			typeScore = 0.8; break;
+	}
+	return 1.0 * areaScore + 0.5 * distScore + 0.3 * typeScore;
+}
+
+// For each space surface, find the single best matching construction surface using
+// the pre-built orientation-bucketed index. Candidate filtering order: AABB overlap,
+// plane parallelism, optional opposite-normal + side-of-space check, plane distance,
+// full Boolean intersection (intersect2). The IntersectionResult is cached inside the
+// returned ConstructionSurfaceInfo so the caller can skip the expensive second call.
+static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurface,
+													   const IBKMK::Vector3D& spaceCentroid,
+													   const std::array<std::vector<IndexedConstrSurface>, 4>& buckets,
+													   const std::vector<std::shared_ptr<BuildingElement>>& constructionElements,
+													   const ConvertOptions& convertOptions) {
+	const double EPS = convertOptions.m_distanceEps;
+	IBKMK::Vector3D ssNormal = spaceSurface.planeNormalVec();
+	int ssBucket = classifyOrientation(ssNormal);
+
+	std::vector<ConstructionSurfaceInfo> candidates;
+	// Visit the matching axis bucket plus the sloped bucket. When the space surface is itself
+	// sloped, it's already in bucket 3 and we skip the redundant re-visit.
+	std::array<int, 2> bucketsToVisit = { ssBucket, 3 };
+	int visitCount = (ssBucket == 3) ? 1 : 2;
+
+	for(int vi = 0; vi < visitCount; ++vi) {
+		int bi = bucketsToVisit[vi];
+		const std::vector<IndexedConstrSurface>& bucket = buckets[bi];
+		for(const IndexedConstrSurface& ics : bucket) {
+			const Surface& cs = constructionElements[ics.m_constructionElementIdx]->surfaces()[ics.m_constructionSurfaceIdx];
+
+			double aabbEps = convertOptions.m_aabbExpandEps + ics.m_threshDist;
+			if(!spaceSurface.aabbOverlaps(cs, aabbEps))
+				continue;
+
+			if(!spaceSurface.isParallelTo(cs, EPS))
+				continue;
+
+			if(convertOptions.m_requireOppositeNormals) {
+				IBKMK::Vector3D csN = cs.planeNormalVec();
+				double dot = ssNormal.m_x * csN.m_x + ssNormal.m_y * csN.m_y + ssNormal.m_z * csN.m_z;
+				// Space-surface normals point outward from the space; a true matching
+				// construction surface faces the space (opposite direction) → dot < 0.
+				if(dot >= 0.0)
+					continue;
+
+				// Side-of-space geometric check: the space centroid must lie on the side
+				// of the construction plane AWAY from where the construction normal points.
+				// This is robust to inconsistent normal authoring — it depends only on the
+				// construction normal pointing outward from the solid, a common convention.
+				const IBKMK::Vector3D& csCenter = cs.centroid();
+				double sideDot = csN.m_x * (spaceCentroid.m_x - csCenter.m_x)
+							   + csN.m_y * (spaceCentroid.m_y - csCenter.m_y)
+							   + csN.m_z * (spaceCentroid.m_z - csCenter.m_z);
+				if(sideDot >= 0.0)
+					continue;
 			}
+
+			double dist = spaceSurface.distanceToParallelPlane(cs, EPS);
+			if(dist >= ics.m_threshDist * (1.0 + EPS))
+				continue;
+
+			// Full Boolean intersection — expensive, but avoids a second call in the caller.
+			Surface::IntersectionResult result = spaceSurface.intersect2(cs);
+			if(!result.isValid())
+				continue;
+
+			double area = 0.0;
+			for(const Surface& s : result.m_intersections)
+				area += s.area();
+			if(area <= convertOptions.m_minimumSurfaceArea)
+				continue;
+
+			ConstructionSurfaceInfo c;
+			c.m_id = ics.m_constructionId;
+			c.m_type = ics.m_type;
+			c.m_distance = dist;
+			c.m_intersectionArea = area;
+			c.m_surfaceIndex = ics.m_constructionSurfaceIdx;
+			c.m_intersectionResult = std::move(result);
+			c.m_hasCachedIntersection = true;
+			candidates.push_back(std::move(c));
 		}
 	}
 
-	if(matches.empty())
+	if(candidates.empty())
 		return ConstructionSurfaceInfo();
 
-	double maxArea = matches[0].m_intersectionArea;
-	int returnIndex = 0;
-	for( size_t i=1; i<matches.size(); ++i) {
-		if(matches[i].m_intersectionArea > maxArea) {
-			maxArea = matches[i].m_intersectionArea;
-			returnIndex = i;
-		}
+	// Single-pass weighted scoring replaces the old double-sort.
+	double maxArea = 0.0, maxDist = 0.0;
+	for(const ConstructionSurfaceInfo& c : candidates) {
+		if(c.m_intersectionArea > maxArea) maxArea = c.m_intersectionArea;
+		if(c.m_distance > maxDist) maxDist = c.m_distance;
 	}
-	return matches[returnIndex];
+	size_t bestIdx = 0;
+	double bestScore = matchScore(candidates[0], maxArea, maxDist);
+	for(size_t i = 1; i < candidates.size(); ++i) {
+		double s = matchScore(candidates[i], maxArea, maxDist);
+		if(s < bestScore) { bestScore = s; bestIdx = i; }
+	}
+	return std::move(candidates[bestIdx]);
 }
 
 static std::shared_ptr<SpaceBoundary> createSpaceBoundary(const std::shared_ptr<BuildingElement>& constr, const SpaceSurfaceMatches& match,
@@ -347,221 +459,198 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 	std::vector<std::shared_ptr<SpaceBoundary>> spaceBoundaries;
 	std::vector<std::shared_ptr<BuildingElement>> constructionElements = buildingElements.allConstructionElements();
 
-	std::vector<SpaceSurfaceMatches> matches;
-
-	bool foundOne = false;
-	int loopCount = 0;
-
-
 	ConvertOptions::ConstructionMatching matchType = convertOptions.m_matchingType;
 
 	if(matchType != ConvertOptions::CM_NoMatching) {
 
-		const int MAX_LOOP_COUNT = matchType == ConvertOptions::CM_MatchOnlyFirstConstruction ? 1 : (matchType == ConvertOptions::CM_MatchFirstNConstructions ? convertOptions.m_matchedConstructionNumbers : 500);
+		// Pre-warm Surface AABB caches for the space surfaces — safe here because this runs
+		// from the outer per-space OMP region; each space owns its own surfaces exclusively.
+		for(Surface& s : surfaces) {
+			s.aabbMin();
+			s.aabbMax();
+		}
 
-		do {
-			matches.clear();
-			foundOne = false;
-			bool noConstructions = true;
-			for(size_t ssi=0; ssi<surfaces.size(); ++ssi) {
-				Surface& currentSurf = surfaces[ssi];
-				matches.emplace_back(SpaceSurfaceMatches());
-				matches.back().m_spaceSurfaceIndex = ssi;
+		// Build the orientation-bucketed construction surface index ONCE.
+		// Buckets: 0 = X-dominant normal, 1 = Y-dominant, 2 = Z-dominant, 3 = sloped.
+		// A space surface only needs to check its own axis bucket plus the sloped bucket.
+		std::array<std::vector<IndexedConstrSurface>, 4> buckets;
+		for(size_t ci = 0; ci < constructionElements.size(); ++ci) {
+			const auto& construction = constructionElements[ci];
+			BuildingElementTypes type = construction->type();
+			if(!convertOptions.hasElementsForSpaceBoundaries(type))
+				continue;
 
-				for(const auto& construction : constructionElements) {
-
-					BuildingElementTypes type = construction->type();
-
-					if(!convertOptions.hasElementsForSpaceBoundaries(type))
-						continue;
-
-					int cid = construction->m_ifcId;
-
-					double dist = construction->thickness();
-					double maxConstructionDist = 0;
-					if(construction->isSubSurfaceComponent() && !construction->m_openingProperties.m_constructionThicknesses.empty()) {
-						maxConstructionDist = *std::max_element(construction->m_openingProperties.m_constructionThicknesses.begin(),
-																construction->m_openingProperties.m_constructionThicknesses.end());
-					}
-					const double MIN_THICKNESS = convertOptions.m_standardWallThickness;
-					if(dist < MIN_THICKNESS) {
-						if(maxConstructionDist > MIN_THICKNESS)
-							dist = maxConstructionDist;
-						else
-							dist = MIN_THICKNESS;
-					}
-					dist *= convertOptions.m_distanceFactor;
-
-					// add all construction surface which are parallel and more or less near the space surface
-					IFCC::ConstructionSurfaceInfo	conInfo = findFirstSurfaceMatchIndex_2(construction->surfaces(), currentSurf, dist, convertOptions);
-					if(conInfo.isValid()) {
-						conInfo.m_id = construction->m_id;		// update real construction id
-						conInfo.m_type = construction->type();
-						matches.back().m_constructions.push_back(conInfo);
-						noConstructions = false;
-					}
-				}
+			double dist = construction->thickness();
+			double maxConstructionDist = 0;
+			if(construction->isSubSurfaceComponent() && !construction->m_openingProperties.m_constructionThicknesses.empty()) {
+				maxConstructionDist = *std::max_element(construction->m_openingProperties.m_constructionThicknesses.begin(),
+														construction->m_openingProperties.m_constructionThicknesses.end());
 			}
+			const double MIN_THICKNESS = convertOptions.m_standardWallThickness;
+			if(dist < MIN_THICKNESS) {
+				if(maxConstructionDist > MIN_THICKNESS)
+					dist = maxConstructionDist;
+				else
+					dist = MIN_THICKNESS;
+			}
+			dist *= convertOptions.m_distanceFactor;
 
-			// matches contains now a vector of all space surfaces which contains a vector of all possible matching construction surfaces
+			const std::vector<Surface>& csList = construction->surfaces();
+			for(size_t si=0; si<csList.size(); ++si) {
+				const Surface& cs = csList[si];
+				// Populate AABB + centroid caches serially before any parallel reads.
+				cs.aabbMin();
+				cs.aabbMax();
+				cs.centroid();
+				int bi = classifyOrientation(cs.planeNormalVec());
+				buckets[bi].push_back(IndexedConstrSurface{
+					(int)ci, (int)si, construction->m_id, dist, type
+				});
+			}
+		}
 
-			if(noConstructions)
+		// Compute this space's centroid (average of all original surface centroids) once —
+		// used as a stable point for the side-of-plane geometric test.
+		IBKMK::Vector3D spaceCentroid(0, 0, 0);
+		{
+			size_t npts = 0;
+			for(const Surface& s : m_surfacesOrg) {
+				const IBKMK::Vector3D& c = s.centroid();
+				spaceCentroid = IBKMK::Vector3D(spaceCentroid.m_x + c.m_x,
+												spaceCentroid.m_y + c.m_y,
+												spaceCentroid.m_z + c.m_z);
+				++npts;
+			}
+			if(npts > 0)
+				spaceCentroid = IBKMK::Vector3D(spaceCentroid.m_x / double(npts),
+												spaceCentroid.m_y / double(npts),
+												spaceCentroid.m_z / double(npts));
+		}
+
+		const int PER_SURFACE_MAX = matchType == ConvertOptions::CM_MatchOnlyFirstConstruction
+				? 1
+				: (matchType == ConvertOptions::CM_MatchFirstNConstructions
+					? std::max(1, convertOptions.m_matchedConstructionNumbers)
+					: std::numeric_limits<int>::max());
+
+		// Total-work safety net to guarantee termination on pathological inputs.
+		const int TOTAL_MAX_ITER = std::max(1, convertOptions.m_maxMatchIterations)
+				* std::max<int>(1, (int)m_surfacesOrg.size());
+
+		// Work queue of surface indices. Residuals produced by divideSurface are appended
+		// to `surfaces` and pushed into the queue so they're matched in the same pass —
+		// no more outer do-while rebuilding `matches` from scratch.
+		std::deque<size_t> workQueue;
+		for(size_t i=0; i<surfaces.size(); ++i)
+			workQueue.push_back(i);
+
+		// Per-surface-slot match counter. Residuals inherit their parent slot's count.
+		std::vector<int> matchCount(surfaces.size(), 0);
+
+		int iters = 0;
+		while(!workQueue.empty() && iters < TOTAL_MAX_ITER) {
+			// Honor user cancellation — bail out leaving remaining surfaces to be marked "Missing".
+			if(Cancellation::isCancelled())
 				break;
+			++iters;
+			size_t ssi = workQueue.front();
+			workQueue.pop_front();
 
-			// run over all matches
-			std::vector<Surface> surfacesBackup = surfaces;
+			// Skip entries that were consumed (polygon cleared) or are too small.
+			if(surfaces[ssi].polygon().empty() || surfaces[ssi].area() < convertOptions.m_minimumSurfaceArea)
+				continue;
 
-			std::set<int> indicesToErase;
+			if(matchCount[ssi] >= PER_SURFACE_MAX)
+				continue;
 
-			for(const SpaceSurfaceMatches& match : matches) {
-				if(match.m_constructions.empty())
-					continue;
+			ConstructionSurfaceInfo best = findBestMatchUsingIndex(
+				surfaces[ssi], spaceCentroid, buckets, constructionElements, convertOptions);
+			if(!best.isValid())
+				continue;
 
-				// store the current stage of space surfaces. It is necessery in order to keep the indices inside the loop
-				// try to find best fitting surface
-				std::vector<int> biggestSurfIndex(match.m_constructions.size());			///< Index vector of the surface with the largest interception
-				std::vector<int> smallestDistanceIndex(match.m_constructions.size());		///< Index vector of the surface with the smallest distance
+			++matchCount[ssi];
 
-				// temporary storage for construction vector of the current space surface
-				const std::vector<ConstructionSurfaceInfo>& matchConstructions = match.m_constructions;
+			std::shared_ptr<BuildingElement> constr = buildingElements.fromID(best.m_id);
+			int bestConstrSurfaceIndex = best.m_surfaceIndex;
 
-				// start vector contains the indices of all construction surfaces
-				std::iota(biggestSurfIndex.begin(), biggestSurfIndex.end(), 0);
-				std::iota(smallestDistanceIndex.begin(), smallestDistanceIndex.end(), 0);
+			// Reuse the intersection result from the prefilter.
+			Surface::IntersectionResult intersectionResult;
+			if(best.m_hasCachedIntersection)
+				intersectionResult = std::move(best.m_intersectionResult);
+			else
+				intersectionResult = surfaces[ssi].intersect2(constr->surfaces()[bestConstrSurfaceIndex]);
 
-				// indices of the construction surfaces will be sorted according surface area and distances
-				// biggestSurfIndex - biigest surface is the first one and all other follows
-				std::sort(biggestSurfIndex.begin(), biggestSurfIndex.end(), [ &matchConstructions](int a, int b) -> bool { return matchConstructions[a].m_intersectionArea > matchConstructions[b].m_intersectionArea; } );
-				// surface with the smallest distance to current space surface is the first one and all others follows
-				std::sort(smallestDistanceIndex.begin(), smallestDistanceIndex.end(), [ &matchConstructions](int a, int b) -> bool { return matchConstructions[a].m_distance < matchConstructions[b].m_distance; } );
+			if(intersectionResult.m_intersections.empty())
+				continue;
 
-				double currentArea = matchConstructions[smallestDistanceIndex[0]].m_distance;
-				std::vector<int> firstIndexList(1, 0);
+			if(intersectionResult.holesWithChilds() > 0)
+				errors.push_back(ConvertError{OT_Space, m_id, "one or more holes in intersections or diff surface has childs"});
 
-				int fi = 0;
-				for(size_t i=1; i<smallestDistanceIndex.size(); ++i) {
-					if(!IBK::near_equal(matchConstructions[smallestDistanceIndex[i]].m_distance, currentArea)) {
-						++fi;
-						currentArea = matchConstructions[smallestDistanceIndex[i]].m_distance;
-					}
-					firstIndexList.push_back(fi);
-				}
+			SpaceSurfaceMatches matchStub;
+			matchStub.m_spaceSurfaceIndex = (int)ssi;
 
-				size_t constructionCount = match.m_constructions.size();
-				// posVect contains priority numbers for all construction surfaces
-				// the lowest priority number has the highest priority
-				// priority number includes position in area vector, position in distance vector and construction type ranking
-				std::vector<int> posVect(constructionCount, 0);
-				for(size_t i=0; i<constructionCount; ++i) {
-					posVect[biggestSurfIndex[i]] += i;			// add position in area list
-
-					posVect[smallestDistanceIndex[i]] += firstIndexList[i];		// add position in distance list
-
-					// add number according construction type ranking
-					if(matchConstructions[i].m_type == BET_Wall || matchConstructions[i].m_type == BET_Roof)
-						posVect[i] += 0;
-					else if(matchConstructions[i].m_type == BET_Slab)
-						posVect[i] += 1;
-					else if(matchConstructions[i].m_type == BET_Beam || matchConstructions[i].m_type == BET_Covering)
-						posVect[i] += constructionCount / 2 + 4;
-					else
-						posVect[i] += constructionCount / 2 + 10;
-				}
-
-				// look for the index with the lowest element (highest priority)
-				int bestMatch_1 = std::min_element(posVect.begin(), posVect.end()) - posVect.begin();
-
-				// get construction from the id of the best match
-				std::shared_ptr<BuildingElement> constr = buildingElements.fromID(matchConstructions[bestMatch_1].m_id);
-				// get surface from this construction
-				int bestConstrSurfaceIndex = matchConstructions[bestMatch_1].m_surfaceIndex;
-				const Surface& currConstructionSurface = constr->surfaces()[bestConstrSurfaceIndex];
-				// get current space surface
-				const Surface& currSpaceSurface = surfacesBackup[match.m_spaceSurfaceIndex];
-
-				// creat intersection tree
-				Surface::IntersectionResult intersectionResult = currSpaceSurface.intersect2(currConstructionSurface);
-				if(intersectionResult.m_intersections.empty())
-					continue;
-
-				foundOne = true;	///< at least one intesection for a space boundary found
-
-				for(size_t i=0; i<intersectionResult.m_intersections.size(); ++i) {
-					if(!intersectionResult.m_holesIntersections[i].empty()) {
-						//						errors.push_back(ConvertError{OT_Space, m_id, IBK::FormatString("intersection from space surface and building element surface has %1 holes")
-						//													  .arg(intersectionResult.m_holesIntersections[i].size()).str()});
-					}
-				}
-
-				if(intersectionResult.holesWithChilds() > 0) {
-					errors.push_back(ConvertError{OT_Space, m_id, "one or more holes in intersections or diff surface has childs"});
-				}
-
-				if(convertOptions.m_matchingType == ConvertOptions::CM_MatchOnlyFirstConstruction) {
-					spaceBoundaries.push_back(createSpaceBoundary(constr, match, bestConstrSurfaceIndex, *this, currSpaceSurface, convertOptions));
-					indicesToErase.insert(match.m_spaceSurfaceIndex);
-					continue;
-				}
-
-
-				if(convertOptions.m_matchingType == ConvertOptions::CM_MatchFirstNConstructions) {
-
-					if(loopCount < MAX_LOOP_COUNT - 1) {
-						for(const auto& surf : intersectionResult.m_intersections)
-							spaceBoundaries.push_back(createSpaceBoundary(constr, match, bestConstrSurfaceIndex, *this, surf, convertOptions));
-
-						std::vector<Surface> subsurfaces;
-						bool toErase = divideSurface(intersectionResult, surfaces, match.m_spaceSurfaceIndex, subsurfaces);
-						if(toErase)
-							indicesToErase.insert(match.m_spaceSurfaceIndex);
-						if(!subsurfaces.empty()) {
-							// what should we do with the holes?
-							errors.push_back(ConvertError{OT_Space, m_id, "rest surface from intersection from space surface and building element surface has holes"});
-						}
-					}
-					else {
-						spaceBoundaries.push_back(createSpaceBoundary(constr, match, bestConstrSurfaceIndex, *this, currSpaceSurface, convertOptions));
-						indicesToErase.insert(match.m_spaceSurfaceIndex);
-					}
-					continue;
-				}
-				else {
-					const Surface& firstISurf = intersectionResult.m_intersections.front();
-					double spaceArea = currSpaceSurface.area();
-					double constructionArea = firstISurf.area();
-
-					if((intersectionResult.m_intersections.size() == 1 && IBK::nearly_equal<2>(constructionArea,spaceArea))) {
-						spaceBoundaries.push_back(createSpaceBoundary(constr, match, bestConstrSurfaceIndex, *this, firstISurf, convertOptions));
-						indicesToErase.insert(match.m_spaceSurfaceIndex);
-					}
-					else {
-						for(const Surface& surf : intersectionResult.m_intersections) {
-							spaceBoundaries.push_back(createSpaceBoundary(constr, match, bestConstrSurfaceIndex, *this, surf, convertOptions));
-						}
-						std::vector<Surface> subsurfaces;
-						// add difference surface - intersections to the surface list and remove the original one
-						bool toErase = divideSurface(intersectionResult, surfaces, match.m_spaceSurfaceIndex, subsurfaces);
-						if(toErase)
-							indicesToErase.insert(match.m_spaceSurfaceIndex);
-						if(!subsurfaces.empty()) {
-							// what should we do with the holes?
-							errors.push_back(ConvertError{OT_Space, m_id, "rest surface from intersection from space surface and building element surface has holes"});
-						}
-					}
-				}
+			// CM_MatchOnlyFirstConstruction: one SB for the whole remaining surface, no subdivision.
+			if(convertOptions.m_matchingType == ConvertOptions::CM_MatchOnlyFirstConstruction) {
+				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
+															  *this, surfaces[ssi], convertOptions));
+				surfaces[ssi].setNewPolygon({});
+				continue;
 			}
-			if(!indicesToErase.empty()) {
-				std::vector<Surface> tempS;
-				for(size_t i=0; i<surfaces.size(); ++i) {
-					if(indicesToErase.find(i) == indicesToErase.end())
-						tempS.push_back(surfaces[i]);
-				}
-				surfaces = tempS;
-				indicesToErase.clear();
-			}
-			++loopCount;
-		} while(foundOne && loopCount < MAX_LOOP_COUNT);
 
+			// CM_MatchFirstNConstructions: on the Nth (final) allowed match, emit a whole-surface SB
+			// instead of subdividing — preserves original algorithm's end-of-budget behavior.
+			bool finalBudgetReached = (convertOptions.m_matchingType == ConvertOptions::CM_MatchFirstNConstructions)
+					&& (matchCount[ssi] >= PER_SURFACE_MAX);
+			if(finalBudgetReached) {
+				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
+															  *this, surfaces[ssi], convertOptions));
+				surfaces[ssi].setNewPolygon({});
+				continue;
+			}
+
+			// Full-coverage shortcut: intersection equals the space surface exactly.
+			const Surface& firstISurf = intersectionResult.m_intersections.front();
+			double spaceArea = surfaces[ssi].area();
+			if(intersectionResult.m_intersections.size() == 1
+					&& IBK::nearly_equal<2>(firstISurf.area(), spaceArea)) {
+				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
+															  *this, firstISurf, convertOptions));
+				surfaces[ssi].setNewPolygon({});
+				continue;
+			}
+
+			// Partial coverage: emit SB per intersection, subdivide, enqueue residuals.
+			for(const Surface& surf : intersectionResult.m_intersections)
+				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
+															  *this, surf, convertOptions));
+
+			std::vector<Surface> holeSubsurfaces;
+			size_t nSurfacesBefore = surfaces.size();
+			bool fullyConsumed = divideSurface(intersectionResult, surfaces, (int)ssi, holeSubsurfaces);
+
+			if(fullyConsumed) {
+				surfaces[ssi].setNewPolygon({});
+			}
+			else {
+				// divideSurface replaced surfaces[ssi] with the first residual and appended the rest.
+				// Residuals inherit matchCount from parent (same budget down the subdivision chain).
+				int parentCount = matchCount[ssi];
+				if(matchCount.size() < surfaces.size())
+					matchCount.resize(surfaces.size(), parentCount);
+				for(size_t newIdx = nSurfacesBefore; newIdx < surfaces.size(); ++newIdx) {
+					matchCount[newIdx] = parentCount;
+					workQueue.push_back(newIdx);
+				}
+				// The parent slot itself now holds a residual — requeue it for further matching.
+				workQueue.push_back(ssi);
+			}
+
+			if(!holeSubsurfaces.empty())
+				errors.push_back(ConvertError{OT_Space, m_id, "rest surface from intersection from space surface and building element surface has holes"});
+		}
+
+		if(iters >= TOTAL_MAX_ITER)
+			errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching hit iteration cap — some surfaces may be marked missing"});
 	}
 
 	for(const Surface& surf : surfaces) {
@@ -580,6 +669,11 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 
 static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const std::shared_ptr<SpaceBoundary> spaceBoundary,
 									  const ConvertOptions& convertOptions, double maxDistance) {
+	// NOTE: an AABB prefilter was tried here but removed — opening polygons and wall SBs
+	// that legitimately contain each other can have surprising AABB gaps (very thin openings,
+	// inconsistent coordinate conventions), and the distanceToParallelPlane test below is
+	// already cheap enough that the prefilter is not worth the risk of silently dropping windows.
+
 	double dist = currentOpeningSurf.distanceToParallelPlane(spaceBoundary->surface(), convertOptions.m_distanceEps);
 	if(dist > maxDistance)
 		return Surface();
@@ -743,6 +837,12 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			continue;
 
 		for(const auto& spaceBoundary : spaceBoundaries) {
+			// Re-check per inner iteration — once a match is made for this opening via a prior SB,
+			// we must stop, otherwise searchOpeningSpaceBoundaries is called again for the same
+			// opening and creates a duplicate opening-SB linked to a second parent SB.
+			if(currOp.hasSpaceBoundary())
+				break;
+
 			// openings can only be part of a construction space boundary
 			if(!spaceBoundary->isConstructionElement())
 				continue;

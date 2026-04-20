@@ -143,8 +143,8 @@ static bool isCoLinear(const IBKMK::Vector3D& v1, const IBKMK::Vector3D& v2, boo
 }
 
 double Surface::distanceToParallelPlane(const Surface& other, double eps) const {
-	PlaneHesseNormal phn1(m_polyVect);
-	PlaneHesseNormal phn2(other.m_polyVect);
+	const PlaneHesseNormal& phn1 = cachedHesse();
+	const PlaneHesseNormal& phn2 = other.cachedHesse();
 
 	bool antiParallel;
 	bool isCoL = isCoLinear(phn1.m_n0, phn2.m_n0, antiParallel, eps);
@@ -265,6 +265,93 @@ bool Surface::isEqualTo(const Surface& other, double eps) const {
 
 void Surface::setNewPolygon(const std::vector<IBKMK::Vector3D> & polygon) {
 	m_polyVect = polygon;
+	m_aabbValid = false;
+	m_hesseValid = false;
+	m_centroidValid = false;
+}
+
+void Surface::ensureHesse() const {
+	if(m_hesseValid)
+		return;
+	m_hesseCached = PlaneHesseNormal(m_polyVect);
+	m_hesseValid = true;
+}
+
+const PlaneHesseNormal& Surface::cachedHesse() const {
+	ensureHesse();
+	return m_hesseCached;
+}
+
+void Surface::ensureCentroid() const {
+	if(m_centroidValid)
+		return;
+	if(m_polyVect.empty()) {
+		m_centroidCached = IBKMK::Vector3D(0, 0, 0);
+		m_centroidValid = true;
+		return;
+	}
+	double sx = 0, sy = 0, sz = 0;
+	for(const IBKMK::Vector3D& v : m_polyVect) {
+		sx += v.m_x; sy += v.m_y; sz += v.m_z;
+	}
+	double n = double(m_polyVect.size());
+	m_centroidCached = IBKMK::Vector3D(sx / n, sy / n, sz / n);
+	m_centroidValid = true;
+}
+
+const IBKMK::Vector3D& Surface::centroid() const {
+	ensureCentroid();
+	return m_centroidCached;
+}
+
+void Surface::ensureAabb() const {
+	if(m_aabbValid)
+		return;
+	if(m_polyVect.empty()) {
+		m_aabbMin = IBKMK::Vector3D(0, 0, 0);
+		m_aabbMax = IBKMK::Vector3D(0, 0, 0);
+		m_aabbValid = true;
+		return;
+	}
+	double minX = m_polyVect[0].m_x, maxX = minX;
+	double minY = m_polyVect[0].m_y, maxY = minY;
+	double minZ = m_polyVect[0].m_z, maxZ = minZ;
+	for(size_t i=1; i<m_polyVect.size(); ++i) {
+		const IBKMK::Vector3D& v = m_polyVect[i];
+		if(v.m_x < minX) minX = v.m_x; else if(v.m_x > maxX) maxX = v.m_x;
+		if(v.m_y < minY) minY = v.m_y; else if(v.m_y > maxY) maxY = v.m_y;
+		if(v.m_z < minZ) minZ = v.m_z; else if(v.m_z > maxZ) maxZ = v.m_z;
+	}
+	m_aabbMin = IBKMK::Vector3D(minX, minY, minZ);
+	m_aabbMax = IBKMK::Vector3D(maxX, maxY, maxZ);
+	m_aabbValid = true;
+}
+
+const IBKMK::Vector3D& Surface::aabbMin() const {
+	ensureAabb();
+	return m_aabbMin;
+}
+
+const IBKMK::Vector3D& Surface::aabbMax() const {
+	ensureAabb();
+	return m_aabbMax;
+}
+
+bool Surface::aabbOverlaps(const Surface& other, double eps) const {
+	ensureAabb();
+	other.ensureAabb();
+	if(m_aabbMax.m_x + eps < other.m_aabbMin.m_x) return false;
+	if(other.m_aabbMax.m_x + eps < m_aabbMin.m_x) return false;
+	if(m_aabbMax.m_y + eps < other.m_aabbMin.m_y) return false;
+	if(other.m_aabbMax.m_y + eps < m_aabbMin.m_y) return false;
+	if(m_aabbMax.m_z + eps < other.m_aabbMin.m_z) return false;
+	if(other.m_aabbMax.m_z + eps < m_aabbMin.m_z) return false;
+	return true;
+}
+
+IBKMK::Vector3D Surface::planeNormalVec() const {
+	const carve::geom::vector<3>& n = m_planeCarve.N;
+	return IBKMK::Vector3D(n.x, n.y, n.z);
 }
 
 
@@ -389,6 +476,9 @@ bool Surface::merge(const Surface& subsurface) {
 		return false;
 
 	m_polyVect = result;
+	m_aabbValid = false;
+	m_hesseValid = false;
+	m_centroidValid = false;
 	return true;
 }
 
@@ -401,6 +491,9 @@ bool Surface::mergeOnlyThanPlanar(const Surface& surface, double eps) {
 		return false;
 
 	m_polyVect = result;
+	m_aabbValid = false;
+	m_hesseValid = false;
+	m_centroidValid = false;
 	return true;
 }
 
