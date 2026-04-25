@@ -498,7 +498,20 @@ bool Surface::mergeOnlyThanPlanar(const Surface& surface, double eps) {
 }
 
 bool Surface::addSubSurface(const Surface& subsurface) {
-	SubSurface sub(subsurface.polygon(), *this);
+	// Clip the candidate subsurface polygon against this parent surface in the
+	// parent's plane. IFC opening polygons commonly span beyond the wall
+	// fragment they're attached to (interior doors that span two adjacent walls,
+	// or windows whose IFC ConnectionGeometry uses the unsplit wall coordinates
+	// while the matched constructionSB is one of the split fragments). Without
+	// clipping the result has SubSurface vertices outside the parent polygon —
+	// VICUS UI then renders the window past the wall edges or as garbage.
+	// Empty clipping result means the candidate doesn't fit on this parent at all
+	// — reject so the caller can attach the opening to a different parent.
+	const polygon3D_t clipped = intersectPolygons(m_polyVect, subsurface.polygon(), m_planeNormal);
+	if(clipped.size() < 3)
+		return false;
+
+	SubSurface sub(clipped, *this);
 	if(!sub.isValid())
 		return false;
 

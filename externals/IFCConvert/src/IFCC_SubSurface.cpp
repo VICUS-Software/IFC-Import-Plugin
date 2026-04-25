@@ -2,6 +2,8 @@
 
 #include <Carve/src/include/carve/carve.hpp>
 
+#include <IBKMK_Polygon3D.h>
+
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Surface.h"
 
@@ -15,12 +17,31 @@ SubSurface::SubSurface(const std::vector<IBKMK::Vector3D>& polygon, const Surfac
 	m_planeNormal(parentSurface.polygon())
 {
 	m_valid = polygon.size() > 2;
+	if(!m_valid)
+		return;
+
+	// Project to 2D using the SAME frame that IBKMK::Polygon3D will pick for the
+	// parent at write-out time (offset = parent's first vertex, localX = first edge,
+	// localY = normal × localX). The previous IFCC PlaneNormal::convert3DPoint used
+	// a different frame, so 2D SubSurface coords didn't line up with the parent's
+	// 2D coords as written to the VICUS XML — VICUS UI rendered windows in the
+	// wrong place even when 3D geometry was correct.
+	IBKMK::Polygon3D parentPoly3D(parentSurface.polygon());
+	if(!parentPoly3D.isValid()) {
+		m_valid = false;
+		return;
+	}
+	const IBKMK::Vector3D offset = parentPoly3D.offset();
+	const IBKMK::Vector3D normal = parentPoly3D.normal();
+	const IBKMK::Vector3D localX = parentPoly3D.localX();
+	IBKMK::Vector3D localY;
+	normal.crossProduct(localX, localY);
 
 	for(const IBKMK::Vector3D& vect : polygon) {
-		IBKMK::Vector2D p2 = m_planeNormal.convert3DPoint(vect);
+		IBKMK::Vector3D rel = vect - offset;
+		IBKMK::Vector2D p2(rel.scalarProduct(localX), rel.scalarProduct(localY));
 		m_polyVect.push_back(p2);
 	}
-
 }
 
 void SubSurface::set(int id, const std::string& name, int elementId) {
