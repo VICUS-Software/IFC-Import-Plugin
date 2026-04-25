@@ -28,6 +28,12 @@ public:
 	/*! Initialize the subsurface.*/
 	void set(int id, const std::string& name, int elementId);
 
+	/*! Replace the 2D polygon (used after merging with a coplanar same-element sub).*/
+	void setPolygon2D(const std::vector<IBKMK::Vector2D>& polygon) {
+		m_polyVect = polygon;
+		m_valid = polygon.size() > 2;
+	}
+
 	/*! Return the 2D polygon.*/
 	const std::vector<IBKMK::Vector2D>& polygon() const {
 		return m_polyVect;

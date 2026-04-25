@@ -192,6 +192,120 @@ polygon3D_t mergePolygons(const polygon3D_t& base, const polygon3D_t& to_merge, 
 
 }
 
+std::vector<CoplanarUnionRing> unionCoplanarPolygons(const std::vector<polygon3D_t>& polygons, const PlaneNormal& plane) {
+	std::vector<CoplanarUnionRing> result;
+	if(polygons.empty())
+		return result;
+
+	try {
+		// Pre-simplify each input polygon to decompose self-touching boundaries (Carve
+		// emits wall front faces with a zero-width seam winding into window cutouts).
+		// SimplifyPolygon with pftNonZero splits these into proper outer+hole path sets
+		// that clipper's union can then merge cleanly via PolyTree.
+		ClipperLib::Clipper clipper;
+		size_t added = 0;
+		for(const polygon3D_t& poly : polygons) {
+			if(poly.size() < 3)
+				continue;
+			ClipperLib::Path path;
+			path.reserve(poly.size());
+			for(const IBKMK::Vector3D& v : poly) {
+				IBKMK::Vector2D v2 = plane.convert3DPoint(v);
+				path.push_back(ClipperLib::IntPoint(
+					static_cast<ClipperLib::cInt>(v2.m_x * CONVERSION),
+					static_cast<ClipperLib::cInt>(v2.m_y * CONVERSION)));
+			}
+			ClipperLib::Paths simplified;
+			ClipperLib::SimplifyPolygon(path, simplified, ClipperLib::pftNonZero);
+			if(simplified.empty()) {
+				// Fallback: hand over the raw path anyway.
+				if(clipper.AddPath(path, ClipperLib::ptSubject, true))
+					++added;
+			}
+			else {
+				for(const ClipperLib::Path& sp : simplified) {
+					if(sp.size() >= 3 && clipper.AddPath(sp, ClipperLib::ptSubject, true))
+						++added;
+				}
+			}
+		}
+		if(added == 0)
+			return result;
+
+		ClipperLib::PolyTree tree;
+		if(!clipper.Execute(ClipperLib::ctUnion, tree, ClipperLib::pftNonZero, ClipperLib::pftNonZero))
+			return result;
+
+		// Top-level PolyNodes are outer rings (IsHole() == false); their direct
+		// children are the inner rings (holes) enclosed by the outer. Holes may
+		// themselves have children (islands inside a hole) — ignored here.
+		for(int i = 0; i < tree.ChildCount(); ++i) {
+			ClipperLib::PolyNode* outer = tree.Childs[i];
+			if(outer == nullptr || outer->IsHole())
+				continue;
+			if(outer->Contour.size() < 3)
+				continue;
+			CoplanarUnionRing ring;
+			ring.m_outer2D = polygon2DFromPath(outer->Contour);
+			ring.m_outer  = create3DFrom2D(ring.m_outer2D, plane);
+			if(ring.m_outer.size() < 3)
+				continue;
+			ring.m_planeOffset = plane.m_pos;
+			ring.m_planeNormal = plane.m_lz;
+			ring.m_planeLocalX = plane.m_lx;
+			for(int j = 0; j < outer->ChildCount(); ++j) {
+				ClipperLib::PolyNode* inner = outer->Childs[j];
+				if(inner == nullptr || !inner->IsHole())
+					continue;
+				if(inner->Contour.size() < 3)
+					continue;
+				polygon2D_t hole2D  = polygon2DFromPath(inner->Contour);
+				polygon3D_t hole3D  = create3DFrom2D(hole2D, plane);
+				if(hole3D.size() >= 3) {
+					ring.m_holes.push_back(hole3D);
+					ring.m_holes2D.push_back(hole2D);
+				}
+			}
+			result.push_back(ring);
+		}
+	}
+	catch (std::exception&) {
+		return std::vector<CoplanarUnionRing>();
+	}
+	catch (...) {
+		return std::vector<CoplanarUnionRing>();
+	}
+	return result;
+}
+
+polygon2D_t union2DPolygons(const polygon2D_t& a, const polygon2D_t& b) {
+	if(a.size() < 3) return b;
+	if(b.size() < 3) return a;
+	try {
+		ClipperLib::Clipper clipper;
+		clipper.AddPath(toPath(a), ClipperLib::ptSubject, true);
+		clipper.AddPath(toPath(b), ClipperLib::ptClip, true);
+		ClipperLib::Paths result;
+		if(!clipper.Execute(ClipperLib::ctUnion, result,
+							ClipperLib::pftNonZero, ClipperLib::pftNonZero))
+			return polygon2D_t();
+		// Filter out tiny noise rings (floating-point artifacts of touching edges)
+		const double minArea = 1e-6;
+		std::vector<ClipperLib::Path> outers;
+		for(const auto& p : result) {
+			if(std::abs(ClipperLib::Area(p)) > minArea)
+				outers.push_back(p);
+		}
+		// Disjoint pieces: caller wants to keep them separate, so return empty.
+		if(outers.size() != 1)
+			return polygon2D_t();
+		return polygon2DFromPath(outers.front());
+	}
+	catch (...) {
+		return polygon2D_t();
+	}
+}
+
 polygon3D_t intersectPolygons(const polygon3D_t& base, const polygon3D_t& intersectPoly, const PlaneNormal& plane) {
 	std::pair<ClipperLib::Path,ClipperLib::Path> clipPolys = createPathFrom3D(base, intersectPoly, plane);
 	if(clipPolys.first.empty() || clipPolys.second.empty())

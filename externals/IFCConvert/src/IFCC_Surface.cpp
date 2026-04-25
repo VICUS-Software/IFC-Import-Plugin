@@ -516,10 +516,40 @@ bool Surface::addSubSurface(const Surface& subsurface) {
 		return false;
 
 	sub.set(subsurface.id(), subsurface.m_name, subsurface.m_elementEntityId);
-	if(sub.isHole())
-		m_holes.push_back(sub);
-	else
-		m_subSurfaces.push_back(sub);
+
+	std::vector<SubSurface>& target = sub.isHole() ? m_holes : m_subSurfaces;
+
+	// Merge with an existing SubSurface of the same building element on this same
+	// parent. Without this, models that fragment one window/door across multiple
+	// IfcRelSpaceBoundary fragments (e.g. Rathaus-Laatzen with 26 SBs for the
+	// same Fenster-004 in one wall) end up with 26 separate SubSurface entries
+	// in the VICUS output instead of one rendered window. Element identity is
+	// keyed on m_elementEntityId; subs without a positive id fall through to
+	// straight insert (e.g. virtual breakouts).
+	// Merge with an existing SubSurface that shares the same building-element name
+	// AND has a touching/overlapping 2D polygon (union2DPolygons returns a single
+	// connected ring only when polygons touch or overlap; disjoint pieces produce
+	// multiple rings and we keep them separate). Catches both:
+	//   - one IfcWindow split into multiple IfcRelSpaceBoundary fragments
+	//   - copies of the same window-type (e.g. Laatzen has 651 IfcWindow named
+	//     'Fenster-004' but adjacent ones in a window band are split fragments
+	//     of one continuous opening that should render as one).
+	if(!sub.name().empty()) {
+		for(SubSurface& existing : target) {
+			if(existing.name() != sub.name())
+				continue;
+			polygon2D_t merged = union2DPolygons(existing.polygon(), sub.polygon());
+			if(merged.size() < 3)
+				continue; // disjoint or union failed — keep both
+			SubSurface replacement(clipped, *this);
+			replacement.set(existing.id(), existing.name(), existing.elementId());
+			replacement.setPolygon2D(merged);
+			existing = replacement;
+			return true;
+		}
+	}
+
+	target.push_back(sub);
 	return true;
 }
 
