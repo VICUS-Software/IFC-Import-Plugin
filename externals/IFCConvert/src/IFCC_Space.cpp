@@ -375,6 +375,14 @@ static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurfa
 	std::array<int, 2> bucketsToVisit = { ssBucket, 3 };
 	int visitCount = (ssBucket == 3) ? 1 : 2;
 
+	// Pass 1 — cheap filtering: collect candidates that pass AABB / parallel /
+	// distance checks, stash their cheap-distance for ordering.
+	struct CheapCandidate {
+		const IndexedConstrSurface* ics;
+		const Surface*              cs;
+		double                      dist;
+	};
+	std::vector<CheapCandidate> cheap;
 	for(int vi = 0; vi < visitCount; ++vi) {
 		int bi = bucketsToVisit[vi];
 		const std::vector<IndexedConstrSurface>& bucket = buckets[bi];
@@ -391,15 +399,8 @@ static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurfa
 			if(convertOptions.m_requireOppositeNormals) {
 				IBKMK::Vector3D csN = cs.planeNormalVec();
 				double dot = ssNormal.m_x * csN.m_x + ssNormal.m_y * csN.m_y + ssNormal.m_z * csN.m_z;
-				// Space-surface normals point outward from the space; a true matching
-				// construction surface faces the space (opposite direction) → dot < 0.
 				if(dot >= 0.0)
 					continue;
-
-				// Side-of-space geometric check: the space centroid must lie on the side
-				// of the construction plane AWAY from where the construction normal points.
-				// This is robust to inconsistent normal authoring — it depends only on the
-				// construction normal pointing outward from the solid, a common convention.
 				const IBKMK::Vector3D& csCenter = cs.centroid();
 				double sideDot = csN.m_x * (spaceCentroid.m_x - csCenter.m_x)
 							   + csN.m_y * (spaceCentroid.m_y - csCenter.m_y)
@@ -412,27 +413,43 @@ static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurfa
 			if(dist >= ics.m_threshDist * (1.0 + EPS))
 				continue;
 
-			// Full Boolean intersection — expensive, but avoids a second call in the caller.
-			Surface::IntersectionResult result = spaceSurface.intersect2(cs);
-			if(!result.isValid())
-				continue;
-
-			double area = 0.0;
-			for(const Surface& s : result.m_intersections)
-				area += s.area();
-			if(area <= convertOptions.m_minimumSurfaceArea)
-				continue;
-
-			ConstructionSurfaceInfo c;
-			c.m_id = ics.m_constructionId;
-			c.m_type = ics.m_type;
-			c.m_distance = dist;
-			c.m_intersectionArea = area;
-			c.m_surfaceIndex = ics.m_constructionSurfaceIdx;
-			c.m_intersectionResult = std::move(result);
-			c.m_hasCachedIntersection = true;
-			candidates.push_back(std::move(c));
+			cheap.push_back({ &ics, &cs, dist });
 		}
+	}
+
+	// Sort cheap candidates by distance ASC so we test the innermost layer first.
+	// This matters for IFCs (THO_optimized) where a single wall is split into Putz /
+	// Beton / Mineralwoll layer parts: opening-bearing surface is the innermost
+	// (smallest dist) one, and the short-circuit below is supposed to pick it.
+	std::sort(cheap.begin(), cheap.end(),
+			  [](const CheapCandidate& a, const CheapCandidate& b){ return a.dist < b.dist; });
+
+	// Pass 2 — expensive intersect2: short-circuit on first candidate that fully
+	// covers the space surface. Saves O(N) intersect2 calls on dense bucket sets.
+	const double spaceArea = spaceSurface.area();
+	for(const CheapCandidate& cc : cheap) {
+		Surface::IntersectionResult result = spaceSurface.intersect2(*cc.cs);
+		if(!result.isValid())
+			continue;
+
+		double area = 0.0;
+		for(const Surface& s : result.m_intersections)
+			area += s.area();
+		if(area <= convertOptions.m_minimumSurfaceArea)
+			continue;
+
+		ConstructionSurfaceInfo c;
+		c.m_id = cc.ics->m_constructionId;
+		c.m_type = cc.ics->m_type;
+		c.m_distance = cc.dist;
+		c.m_intersectionArea = area;
+		c.m_surfaceIndex = cc.ics->m_constructionSurfaceIdx;
+		c.m_intersectionResult = std::move(result);
+		c.m_hasCachedIntersection = true;
+		candidates.push_back(std::move(c));
+
+		if(spaceArea > 0.0 && area >= 0.99 * spaceArea)
+			break;
 	}
 
 	if(candidates.empty())
@@ -519,9 +536,15 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				maxConstructionDist = *std::max_element(construction->m_openingProperties.m_constructionThicknesses.begin(),
 														construction->m_openingProperties.m_constructionThicknesses.end());
 			}
+			// Only clamp to the standard-wall-thickness fallback when thickness is
+			// effectively missing (< 1cm). Thin elements like IfcBuildingElementPart
+			// layers (e.g. 5cm Mineralwolldämmung) have a valid thickness and don't
+			// need the 0.5m fallback — clamping there inflates the matching threshold
+			// to ~1.5m and turns hundreds of distant parallel walls into candidates.
+			const double NEAR_ZERO_THICKNESS = 0.01;
 			const double MIN_THICKNESS = convertOptions.m_standardWallThickness;
-			if(dist < MIN_THICKNESS) {
-				if(maxConstructionDist > MIN_THICKNESS)
+			if(dist < NEAR_ZERO_THICKNESS) {
+				if(maxConstructionDist > NEAR_ZERO_THICKNESS)
 					dist = maxConstructionDist;
 				else
 					dist = MIN_THICKNESS;

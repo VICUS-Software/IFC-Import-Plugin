@@ -1,8 +1,12 @@
 #include "IFCImportPlugin.h"
 
+#include <iostream>
+
 #include <IBK_messages.h>
+#include <IBK_Path.h>
 
 #include <IFCC_IFCReader.h>
+#include <IFCC_Helper.h>
 
 #include <QtExt_Directories.h>
 #include <QtExt_LanguageHandler.h>
@@ -75,5 +79,39 @@ void IFCImportPlugin::setLanguage(QString langId, QString appname) {
 
 QString IFCImportPlugin::IFCFileName() const {
 	return m_ifcFileName;
+}
+
+bool IFCImportPlugin::runCLI(const QString & ifcPath, const QString & vicusPath,
+							 bool useSpaceBoundaries, bool writeShading) {
+	IFCC::IFCReader reader;
+	reader.setWriteShadingObjects(writeShading, writeShading, writeShading, false);
+
+	// Default element-type filter: walls/slabs/roofs PLUS IfcBuildingElementPart so
+	// openings attach to the actual layer surface (e.g. "Mineralwolldämmung Prio 1"
+	// in THO_optimized). createSpaceBoundaries_2 transparently drops walls that have
+	// part-children when parts are matched.
+	for(IFCC::BuildingElementTypes t : IFCC::constructionTypes())
+		reader.setElementsForSpaceBoundaries(t, true);
+	reader.setElementsForSpaceBoundaries(IFCC::BET_BuildingElementPart, true);
+
+	IBK::Path inPath(ifcPath.toStdString());
+	// ignoreReadError=true: keep going even if the STEP parser reports broken
+	// forward references — most files still produce usable geometry for the
+	// entities that DID resolve, which is more useful than hard-failing in batch.
+	if(!reader.read(inPath, true)) {
+		std::cerr << "[CLI] read failed hard: " << reader.m_errorText << std::endl;
+		return false;
+	}
+	if(!reader.convert(useSpaceBoundaries)) {
+		std::cerr << "[CLI] convert reported errors: " << reader.m_errorText << std::endl;
+		// Still write what we have — partial results are useful for batch quality analysis.
+	}
+	if(!reader.m_convertCompletedSuccessfully) {
+		std::cerr << "[CLI] convert did not complete successfully" << std::endl;
+	}
+	IBK::Path outPath(vicusPath.toStdString());
+	reader.writeXML(outPath);
+	m_ifcFileName = ifcPath;
+	return reader.m_convertCompletedSuccessfully;
 }
 
