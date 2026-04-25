@@ -25,6 +25,7 @@
 #include "IFCC_Helper.h"
 #include "IFCC_RepresentationHelper.h"
 #include "IFCC_Cancellation.h"
+#include "IFCC_Clippertools.h"
 #include "IFCC_Logger.h"
 
 namespace IFCC {
@@ -1227,6 +1228,80 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 	}
 	if(wrongSurfaces > 0) {
 		errors.push_back(ConvertError{OT_Space, m_id, "Space contains " + std::to_string(wrongSurfaces) + " space boundaries with non valid surface."});
+	}
+
+	// Coalesce coplanar construction SBs of the same building element. IFC files like
+	// BBW_Haus_D fragment one wall/slab into many SBs (e.g. 30 'Virtual', 16 'Dach-003',
+	// 15 'Wand-054' in one room). Merging same-element coplanar fragments closes
+	// internal artificial edges and gives the room a clean perimeter for the
+	// VICUS::Room::isVolumeOpen() check. Opening SBs stay untouched — they get
+	// re-attached to the merged constrSB by the matching loop below.
+	{
+		auto computePlaneKey = [](const Surface& s) {
+			IBKMK::Vector3D n = s.planeNormalVec();
+			// Canonicalize sign: flip so first nonzero component is positive.
+			const double eps = 1e-8;
+			bool flip = false;
+			if(std::abs(n.m_x) > eps) flip = n.m_x < 0;
+			else if(std::abs(n.m_y) > eps) flip = n.m_y < 0;
+			else flip = n.m_z < 0;
+			if(flip) n = IBKMK::Vector3D(-n.m_x, -n.m_y, -n.m_z);
+			// Distance via centroid · normal (centroid lies on plane).
+			double d = s.centroid().scalarProduct(n);
+			// Quantize to 1cm for grouping
+			auto qd = static_cast<long long>(std::round(d / 0.01));
+			auto qx = static_cast<long long>(std::round(n.m_x * 1000));
+			auto qy = static_cast<long long>(std::round(n.m_y * 1000));
+			auto qz = static_cast<long long>(std::round(n.m_z * 1000));
+			return std::make_tuple(qx, qy, qz, qd);
+		};
+		using PlaneKey = std::tuple<long long,long long,long long,long long>;
+		// Group by (elementEntityId, planeKey)
+		std::map<std::pair<int,PlaneKey>, std::vector<std::shared_ptr<SpaceBoundary>>> groups;
+		for(auto& sb : m_spaceBoundaries) {
+			if(!sb->isConstructionElement() && !sb->isVirtual())
+				continue;
+			if(sb->m_elementEntityId < 0)
+				continue;
+			groups[{sb->m_elementEntityId, computePlaneKey(sb->surface())}].push_back(sb);
+		}
+		size_t coalescedGroups = 0, droppedSBs = 0;
+		for(auto& kv : groups) {
+			auto& group = kv.second;
+			if(group.size() < 2)
+				continue;
+			std::vector<polygon3D_t> polys;
+			polys.reserve(group.size());
+			for(auto& sb : group)
+				polys.push_back(sb->surface().polygon());
+			PlaneNormal plane(group.front()->surface().polygon());
+			std::vector<CoplanarUnionRing> rings = unionCoplanarPolygons(polys, plane);
+			if(rings.size() != 1 || !rings.front().m_holes.empty())
+				continue; // disjoint or has holes — skip merge
+			// Replace the group: keep the first SB, swap its surface for the merged one,
+			// drop the others from m_spaceBoundaries.
+			auto& kept = group.front();
+			Surface mergedSurf(rings.front().m_outer);
+			mergedSurf.set(kept->surface().id(), kept->surface().elementId(),
+						   kept->surface().name(), kept->surface().isVirtual());
+			kept->fetchGeometryFromBuildingElement(mergedSurf, convertOptions);
+			++coalescedGroups;
+			std::set<int> dropIds;
+			for(size_t i = 1; i < group.size(); ++i) {
+				dropIds.insert(group[i]->m_id);
+				++droppedSBs;
+			}
+			m_spaceBoundaries.erase(
+				std::remove_if(m_spaceBoundaries.begin(), m_spaceBoundaries.end(),
+					[&dropIds](const std::shared_ptr<SpaceBoundary>& sb){
+						return dropIds.count(sb->m_id);
+					}),
+				m_spaceBoundaries.end());
+		}
+		if(coalescedGroups > 0)
+			Logger::instance() << "coalesce: space=" << m_id
+							   << " merged " << coalescedGroups << " same-element coplanar groups"
+							   << " (dropped " << droppedSBs << " fragmented SBs)";
 	}
 
 	// create two temporary vectors for construction space boundaries and opening space boundaries
