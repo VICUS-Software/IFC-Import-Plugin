@@ -6,6 +6,11 @@ namespace IFCC {
 
 ConvertOptions::ConvertOptions() {
 	m_noSearchForOpeningsInTypesFixed = constructionSimilarTypes();
+	// IfcBuildingElementPart is in constructionSimilarTypes() but in some IFCs
+	// (THO_optimized, BBW_Haus_D) it IS the wall geometry that hosts windows/doors
+	// (e.g. "Mineralwolldämmung Prio 1" parts). Allow openings to match against
+	// these — non-wall parts simply won't intersect any opening geometrically.
+	m_noSearchForOpeningsInTypesFixed.remove(BET_BuildingElementPart);
 	m_noSearchForOpeningsInTypesFixed += openingTypes();
 	m_noSearchForOpeningsInTypesFixed << BET_Chimney << BET_RampFlight << BET_ShadingDevice;
 	m_noSearchForOpeningsInTypesFixed << BET_Member << BET_Pile << BET_Plate << BET_Railing << BET_Ramp;
