@@ -487,10 +487,30 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 		// Buckets: 0 = X-dominant normal, 1 = Y-dominant, 2 = Z-dominant, 3 = sloped.
 		// A space surface only needs to check its own axis bucket plus the sloped bucket.
 		std::array<std::vector<IndexedConstrSurface>, 4> buckets;
+
+		// When BuildingElementPart matching is enabled, a wall that aggregates parts
+		// (e.g. a layered IfcWall holding "Mineralwolldämmung Prio 1" parts in
+		// THO_optimized) is replaced by its parts in the index — both keeps the index
+		// size from doubling AND lets openings attach to the actual layer surface
+		// the user expects to see in the 3D view, rather than the bare wall.
+		const bool partMatchingEnabled = convertOptions.hasElementsForSpaceBoundaries(BET_BuildingElementPart);
+		std::set<std::string> wallGuidsWithParts;
+		if(partMatchingEnabled) {
+			for(const auto& construction : constructionElements) {
+				if(construction->type() != BET_Wall || !construction->hasElementParts())
+					continue;
+				wallGuidsWithParts.insert(construction->m_guid);
+			}
+		}
+
 		for(size_t ci = 0; ci < constructionElements.size(); ++ci) {
 			const auto& construction = constructionElements[ci];
 			BuildingElementTypes type = construction->type();
 			if(!convertOptions.hasElementsForSpaceBoundaries(type))
+				continue;
+			// Drop walls whose layer-parts are also matched — keeps openings from
+			// attaching to the bare wall when the parts carry the visible surface.
+			if(type == BET_Wall && wallGuidsWithParts.count(construction->m_guid))
 				continue;
 
 			double dist = construction->thickness();

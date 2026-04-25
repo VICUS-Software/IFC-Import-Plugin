@@ -16,6 +16,8 @@
 #include <ifcpp/IFC4X3/include/IfcWallType.h>
 #include <ifcpp/IFC4X3/include/IfcBuildingElementPart.h>
 
+#include <VICUS_ShadingObject.h>
+
 #include "IFCC_GeometryInputData.h"
 #include "IFCC_Types.h"
 #include "IFCC_Surface.h"
@@ -205,15 +207,39 @@ public:
 		return !m_surfaceComponent && !m_subSurfaceComponent;
 	}
 
+	/*! Thermal transmittance (U-value) in [W/m2K] pulled from the IFC Pset (0 if unset). */
+	double thermalTransmittance() const {
+		return m_thermalTransmittance;
+	}
+
+	/*! Read-only access to the full property set map (Pset → property-name → Property). */
+	const std::map<std::string, std::map<std::string, Property>>& propertyMap() const {
+		return m_propertyMap;
+	}
+
 	/*! Return type of the building element.*/
 	BuildingElementTypes type() const {
 		return m_type;
+	}
+
+	/*! Return true if this building element aggregates one or more layered
+		IfcBuildingElementPart children (used by createSpaceBoundaries_2 to skip
+		walls whose parts will be matched instead).*/
+	bool hasElementParts() const {
+		return !m_hasElementParts.empty();
 	}
 
 	/*! Write the building element in vicus xml format including surfaces.
 		\param parent Parent xml node
 	*/
 	TiXmlElement * writeXML(TiXmlElement * parent, const ConvertOptions& convertOptions) const;
+
+	/*! Build a VICUS::ShadingObject from this building element.
+		All valid surfaces in m_surfaces are converted to VICUS::Surface and stored in the
+		returned shading object. The shading object uses the element id and name.
+		\return ShadingObject with m_id == INVALID_ID if no valid surfaces exist.
+	*/
+	VICUS::ShadingObject getVicusShadingObject(const ConvertOptions& options) const;
 
 	/*! Vector of thickness and name for the layers of this element.*/
 	std::vector<std::pair<double,std::string>>							m_materialLayers;
