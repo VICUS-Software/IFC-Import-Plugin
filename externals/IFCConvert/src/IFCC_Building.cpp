@@ -11,6 +11,9 @@
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
 #include "IFCC_ProgressHandler.h"
+#include "IFCC_Space.h"
+#include "IFCC_BuildingStorey.h"
+#include "IFCC_Logger.h"
 
 namespace IFCC {
 
@@ -133,6 +136,66 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 										openings, useSpaceBoundaries, errors, convertOptions, nullptr);
 		}
 	}
+
+	// Cross-space fallback. Per-space matching sees only its own SBs and commits on
+	// real geometric intersection. Openings whose geometry is in a wall shared across
+	// rooms (curtainwalls) may miss every room's SB slice, or their IFC relationship
+	// may point to a wall whose SB's polygon doesn't contain the opening. This global
+	// sweep considers every construction SB in the building.
+	//
+	// Pass A: strict 2D intersection only (no coplanar-accept). Picks the room whose
+	// SB polygon actually geometrically contains the opening.
+	// Pass B: if Pass A finds nothing anywhere in the building, fall back to coplanar-
+	// accept — the opening lies in some wall's plane but no room's slice contains it.
+	// Coplanar-accept is deferred to this global scope so first-processed-room bias
+	// can't win over a better geometric match.
+	size_t matchedStrict = 0, matchedCoplanar = 0;
+	for(Opening& op : openings) {
+		if(op.hasSpaceBoundary())
+			continue;
+
+		std::shared_ptr<Space> bestSpace;
+		Space::OpeningMatchCandidate best;
+
+		// Pass A — strict intersect across every space.
+		for(const auto& storey : m_storeys) {
+			for(const auto& space : storey->spaces()) {
+				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
+					/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/false);
+				if(c.area > best.area) {
+					best = c;
+					bestSpace = space;
+				}
+			}
+		}
+
+		if(bestSpace && best.area > 0.0) {
+			bestSpace->commitOpeningMatch(op, best, convertOptions);
+			++matchedStrict;
+			continue;
+		}
+
+		// Pass B — coplanar-accept fallback.
+		for(const auto& storey : m_storeys) {
+			for(const auto& space : storey->spaces()) {
+				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
+					/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/true);
+				if(c.area > best.area) {
+					best = c;
+					bestSpace = space;
+				}
+			}
+		}
+
+		if(bestSpace && best.area > 0.0) {
+			bestSpace->commitOpeningMatch(op, best, convertOptions);
+			++matchedCoplanar;
+		}
+	}
+	Logger::instance() << "Building::updateStoreys: cross-space fallback matched "
+					   << matchedStrict << " strict + " << matchedCoplanar << " coplanar"
+					   << " of " << openings.size() << " openings";
+
 	return true;
 }
 

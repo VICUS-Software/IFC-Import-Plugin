@@ -10,11 +10,14 @@
 #include <cmath>
 #include <deque>
 #include <limits>
+#include <map>
 
 #include <IBK_math.h>
 #include <IBK_FormatString.h>
 
 #include <IBKMK_3DCalculations.h>
+
+#include <VICUS_Polygon2D.h>
 
 #include <Carve/src/include/carve/carve.hpp>
 
@@ -22,6 +25,7 @@
 #include "IFCC_Helper.h"
 #include "IFCC_RepresentationHelper.h"
 #include "IFCC_Cancellation.h"
+#include "IFCC_Logger.h"
 
 namespace IFCC {
 
@@ -77,9 +81,17 @@ void Space::transform(std::shared_ptr<ProductShapeData> productShape) {
 		return;
 
 	m_transformMatrix = productShape->getTransform();
+	if(productShape->m_transformAppliedByIFCC)
+		return;
+
 	if(m_transformMatrix != carve::math::Matrix::IDENT()) {
-		productShape->applyTransformToProduct(m_transformMatrix, true, true);
+		// applyToChildren=false: Space's m_vec_children may contain aggregate children
+		// (e.g. IfcSpace composed of sub-spaces). Those sub-products have their own
+		// transform() calls with their own composed placement chains, so recursing here
+		// would double-apply this space's chain to their meshes.
+		productShape->applyTransformToProduct(m_transformMatrix, true, false);
 	}
+	productShape->m_transformAppliedByIFCC = true;
 }
 
 void Space::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std::vector<ConvertError>& errors) {
@@ -668,7 +680,8 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 }
 
 static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const std::shared_ptr<SpaceBoundary> spaceBoundary,
-									  const ConvertOptions& convertOptions, double maxDistance) {
+									  const ConvertOptions& convertOptions, double maxDistance,
+									  bool allowCoplanarAccept = false) {
 	// NOTE: an AABB prefilter was tried here but removed — opening polygons and wall SBs
 	// that legitimately contain each other can have surprising AABB gaps (very thin openings,
 	// inconsistent coordinate conventions), and the distanceToParallelPlane test below is
@@ -679,10 +692,51 @@ static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const s
 		return Surface();
 
 	Surface intersectionResult = spaceBoundary->surface().intersect(currentOpeningSurf);
-	if(intersectionResult.isValid(convertOptions.m_distanceEps))
-		return intersectionResult;
+	if(!intersectionResult.isValid(convertOptions.m_distanceEps)) {
+		// Coplanar-accept fallback. For curtainwall-like walls each room sees only a
+		// partial slice of the full wall face; an opening can lie in the wall's plane
+		// but miss the current room's SB slice in 2D, producing an empty intersection
+		// even though the opening genuinely belongs to this wall. Accept the match
+		// using the opening's own polygon when the planes coincide and the opening is
+		// much smaller than the SB (guard against huge/spurious openings).
+		// Only enabled by the cross-space Building-level fallback, so per-space matching
+		// doesn't prematurely commit an opening in the wrong (first-processed) room.
+		const double kMinOpeningArea = 0.05;
+		double openingArea = currentOpeningSurf.area();
+		double sbArea      = spaceBoundary->surface().area();
+		if(allowCoplanarAccept &&
+		   dist < convertOptions.m_distanceEps &&
+		   openingArea >= kMinOpeningArea &&
+		   sbArea > 0.0 &&
+		   openingArea < 0.5 * sbArea) {
+			Logger::instance() << "matchingOpeningSurface: coplanar-accept"
+							   << " sb='" << spaceBoundary->m_name << "'"
+							   << " openingArea=" << openingArea
+							   << " sbArea=" << sbArea;
+			return currentOpeningSurf;
+		}
+		return Surface();
+	}
 
-	return Surface();
+	// Reject tiny grazing intersections. Catches cases where an opening face barely
+	// touches the corner of an SB surface. Kept loose (0.10) so we don't false-reject
+	// windows straddling corners. Big-vs-small SB disambiguation is handled by sorting
+	// SBs by area in the caller, so the largest wall face wins first-match.
+	double interArea   = intersectionResult.area();
+	double openingArea = currentOpeningSurf.area();
+	double sbArea      = spaceBoundary->surface().area();
+	double minInput    = std::min(openingArea, sbArea);
+	if(minInput > 0.0 && interArea / minInput < 0.10) {
+		Logger::instance() << "matchingOpeningSurface: reject thin-strip"
+						   << " sb='" << spaceBoundary->m_name << "'"
+						   << " interArea=" << interArea
+						   << " openingArea=" << openingArea
+						   << " sbArea=" << sbArea
+						   << " ratio=" << (interArea / minInput);
+		return Surface();
+	}
+
+	return intersectionResult;
 }
 
 static Surface mergeSurfaces(const std::vector<Surface>& surfaces, double eps) {
@@ -725,36 +779,72 @@ static bool addOpeningSpaceBoundary(const Surface& surface, Opening& currOp, con
 	return true;
 }
 
-static void searchOpeningSpaceBoundaries(Opening& currOp, const std::shared_ptr<SpaceBoundary> spaceBoundary, const std::shared_ptr<BuildingElement>& openingElem,
-								  const ConvertOptions& convertOptions, std::vector<std::shared_ptr<SpaceBoundary>>& openingSpaceBoundaries,
-								  const Space& space, double maxDistance) {
+/*! Try to match an opening to a given space boundary and return the merged candidate
+	surface. Does NOT commit the match. Returns an invalid Surface if nothing matched.
+	Caller is expected to pick the best candidate across SBs (largest area) and commit via
+	addOpeningSpaceBoundary. This replaces the previous "first-match-wins" iteration that
+	could produce windows attached to small inward-facing SBs simply because those SBs
+	appeared earlier in the list than the correct big wall face.
+*/
+static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr<SpaceBoundary>& spaceBoundary,
+										  const ConvertOptions& convertOptions, double maxDistance,
+										  bool allowCoplanarAccept = false) {
 	std::vector<Surface> openingSurfaces;
 	const std::vector<Surface>& openingSurfces = convertOptions.m_useCSGForOpenings && !currOp.surfacesCSGElement().empty() ? currOp.surfacesCSGElement() :
-																													   currOp.surfaces();	
+																													   currOp.surfaces();
+
+	// Diagnostics — why does the match fail when it does.
+	int probableSideTried = 0;
+	int fallbackTried = 0;
+	double bestDistProbable = 1e20;
+	double bestDistFallback = 1e20;
+
 	for(size_t cosi=0; cosi<openingSurfces.size(); ++cosi) {
 		const Surface& currentOpeningSurf = openingSurfces[cosi];
 		if(currentOpeningSurf.sideType() != Surface::ST_ProbableSide)
 			continue;
+		++probableSideTried;
+		double d = currentOpeningSurf.distanceToParallelPlane(spaceBoundary->surface(), convertOptions.m_distanceEps);
+		if(d < bestDistProbable)
+			bestDistProbable = d;
 
-		Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance);
+		Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance, allowCoplanarAccept);
 		if(surf.isValid(convertOptions.m_distanceEps))
 			openingSurfaces.push_back(surf);
 	}
 	if(openingSurfaces.empty()) {
 		for(size_t cosi=0; cosi<currOp.surfaces().size(); ++cosi) {
 			const Surface& currentOpeningSurf = currOp.surfaces()[cosi];
+			// Skip reveal/side faces of the opening hole — these lead to thin-strip
+			// matches against wall edges/ledges. Kept as fallback so openings whose
+			// sideType stayed ST_Unknown can still match.
+			if(currentOpeningSurf.sideType() == Surface::ST_UnProbableSide)
+				continue;
+			++fallbackTried;
+			double d = currentOpeningSurf.distanceToParallelPlane(spaceBoundary->surface(), convertOptions.m_distanceEps);
+			if(d < bestDistFallback)
+				bestDistFallback = d;
 
 			Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance);
 			if(surf.isValid(convertOptions.m_distanceEps))
 				openingSurfaces.push_back(surf);
 		}
 	}
-	if(!openingSurfaces.empty()) {
-		Surface mergedSurface = mergeSurfaces(openingSurfaces, convertOptions.m_distanceEps);
-		addOpeningSpaceBoundary(mergedSurface, currOp, spaceBoundary, openingElem, space.m_longName, openingSpaceBoundaries, space, convertOptions);
+	if(openingSurfaces.empty()) {
+		Logger::instance() << "computeOpeningMatchSurface: NO-MATCH"
+						   << " opening id=" << currOp.m_id
+						   << " name='" << currOp.m_name << "'"
+						   << " sb='" << spaceBoundary->m_name << "'"
+						   << " maxDistance=" << maxDistance
+						   << " probableSideTried=" << probableSideTried
+						   << " bestDistProbable=" << bestDistProbable
+						   << " fallbackTried=" << fallbackTried
+						   << " bestDistFallback=" << bestDistFallback
+						   << " sbSurfaceArea=" << spaceBoundary->surface().area();
+		return Surface();
 	}
+	return mergeSurfaces(openingSurfaces, convertOptions.m_distanceEps);
 }
-
 
 void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std::shared_ptr<SpaceBoundary>>& spaceBoundaries,
 																const BuildingElementsCollector& buildingElements,
@@ -763,138 +853,241 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 	if(openings.empty())
 		return;
 
+	const std::string spaceTag = m_longName.empty() ? m_name : m_longName;
+	Logger::instance() << "space-openings: BEGIN space='" << spaceTag << "' id=" << m_id
+					   << " totalOpenings=" << openings.size()
+					   << " totalSBs=" << spaceBoundaries.size();
+
 	std::vector<std::shared_ptr<SpaceBoundary>> openingSpaceBoundaries;
 
+	// Two-pass matching: for each opening, evaluate ALL candidate SBs first and keep
+	// only the match with the largest intersection area. Committing immediately on
+	// first match attached openings to the first geometrically-compatible SB — which
+	// could be a small inward-facing ledge/niche rather than the main wall face.
+	std::map<int, Space::OpeningMatchCandidate> bestByOp;
+
+	auto resolveOpeningElem = [&](const Opening& op) -> std::shared_ptr<BuildingElement> {
+		std::shared_ptr<BuildingElement> oe;
+		if(op.openingElementIds().size() == 1) {
+			oe = buildingElements.fromID(op.openingElementIds().front());
+		}
+		else if(op.openingElementIds().size() > 1) {
+			for(int id : op.openingElementIds()) {
+				auto cand = buildingElements.fromID(id);
+				if(cand && isOpeningType(cand->type())) { oe = cand; break; }
+			}
+			if(!oe)
+				oe = buildingElements.fromID(op.openingElementIds().front());
+		}
+		return oe;
+	};
+
+	// Track every opening that had at least one candidate evaluated (matched or not),
+	// so we can report per-space: "opening X was considered against N SBs, Y returned a
+	// valid match, best was SB Z with area A." Crucial for diagnosing rooms where
+	// windows vanish entirely — the log will tell us whether no SB was tried at all,
+	// or they were all rejected by the thin-strip / intersection guards.
+	struct OpeningTrace {
+		int considered = 0;
+		int validMatches = 0;
+		std::string triedSbNames; // comma-separated list of SBs attempted
+	};
+	std::map<int, OpeningTrace> traceByOp;
+
+	auto considerCandidate = [&](Opening& currOp, const std::shared_ptr<SpaceBoundary>& sb,
+								 const std::shared_ptr<BuildingElement>& openingElem, double searchDist) {
+		OpeningTrace& trace = traceByOp[currOp.m_id];
+		++trace.considered;
+		if(!trace.triedSbNames.empty())
+			trace.triedSbNames += ", ";
+		trace.triedSbNames += sb->m_name;
+		Surface merged = computeOpeningMatchSurface(currOp, sb, convertOptions, searchDist);
+		if(!merged.isValid(convertOptions.m_distanceEps))
+			return;
+		++trace.validMatches;
+		double area = merged.area();
+		auto it = bestByOp.find(currOp.m_id);
+		if(it == bestByOp.end() || area > it->second.area) {
+			bestByOp[currOp.m_id] = {sb, openingElem, merged, area};
+		}
+	};
+
+	// Pass 1a: SB-first iteration over openings linked via m_containedOpenings.
 	for(const auto& spaceBoundary : spaceBoundaries) {
-		// openings can only be part of a construction space boundary
 		if(!spaceBoundary->isConstructionElement())
 			continue;
 
 		std::string elemGUID = spaceBoundary->guidRelatedElement();
 		const std::shared_ptr<BuildingElement> elem = buildingElements.fromGUID(elemGUID);
-		// only go further if space boundary is connected to a existing construction element
 		if(elem.get() == nullptr)
 			continue;
-
-		// only go further if the construction contains openings
 		if(elem->m_containedOpenings.empty())
 			continue;
-
 		if(convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
 			continue;
 
-		// extend search distance by construction thickness (thick walls can place openings beyond default 0.5m)
 		double searchDist = convertOptions.m_openingDistance;
 		searchDist = std::max(elem->thickness(), searchDist);
 		searchDist *= 1.1;
 
-		// collect all contained openings
-		std::vector<size_t> containedOpeningsIndices;
 		for(int opid : elem->m_containedOpenings) {
 			auto fitOp = std::find_if(openings.begin(), openings.end(),
 									  [opid](const auto& op) -> bool { return op.m_id == opid; });
-			if(fitOp != openings.end())
-				containedOpeningsIndices.push_back(std::distance(openings.begin(), fitOp));
-		}
-		// only go further if we have some contained openings
-		if(containedOpeningsIndices.empty())
-			continue;
-
-		// look for all openings which are related to the construction element of the space boundary
-		for(size_t coi=0; coi<containedOpeningsIndices.size(); ++coi) {
-			int opIndex = containedOpeningsIndices[coi];
-			Opening& currOp = openings[opIndex];
-			if(currOp.hasSpaceBoundary())
+			if(fitOp == openings.end())
 				continue;
+			Opening& currOp = *fitOp;
+			if(currOp.hasSpaceBoundary())
+				continue; // already linked via IFC relations
 
-			std::shared_ptr<BuildingElement> openingElem;
-			// has no construction - its a breakout
-			if(currOp.openingElementIds().size() == 1) {
-				int id = currOp.openingElementIds().front();
-				openingElem = buildingElements.fromID(id);
-			}
-			// multiple opening elements (e.g. curtain wall) - pick first window/door, fallback to first element
-			else if(currOp.openingElementIds().size() > 1) {
-				for(int id : currOp.openingElementIds()) {
-					std::shared_ptr<BuildingElement> elem = buildingElements.fromID(id);
-					if(elem && isOpeningType(elem->type())) {
-						openingElem = elem;
-						break;
-					}
-				}
-				if(!openingElem) {
-					int id = currOp.openingElementIds().front();
-					openingElem = buildingElements.fromID(id);
-				}
-			}
-			searchOpeningSpaceBoundaries(currOp, spaceBoundary, openingElem, convertOptions, openingSpaceBoundaries, *this, searchDist);
+			considerCandidate(currOp, spaceBoundary, resolveOpeningElem(currOp), searchDist);
 		}
 	}
 
-	// now look for all non related openings (openings not found via m_containedOpenings)
+	// Pass 1b: opening-first iteration for openings not matched above — try every SB
+	// whose building element explicitly lists this opening in m_containedOpenings.
 	for(Opening& currOp : openings) {
 		if(currOp.hasSpaceBoundary())
 			continue;
+		if(bestByOp.count(currOp.m_id))
+			continue; // already has a candidate from pass 1a
 
 		for(const auto& spaceBoundary : spaceBoundaries) {
-			// Re-check per inner iteration — once a match is made for this opening via a prior SB,
-			// we must stop, otherwise searchOpeningSpaceBoundaries is called again for the same
-			// opening and creates a duplicate opening-SB linked to a second parent SB.
-			if(currOp.hasSpaceBoundary())
-				break;
-
-			// openings can only be part of a construction space boundary
 			if(!spaceBoundary->isConstructionElement())
 				continue;
-
 			if(convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
 				continue;
 
-			// get the construction element for this space boundary
 			std::string elemGUID = spaceBoundary->guidRelatedElement();
 			const std::shared_ptr<BuildingElement> sbElem = buildingElements.fromGUID(elemGUID);
-
-			// only match this opening if the SB's construction element actually contains it
-			// this prevents matching openings to the wrong wall (e.g. exterior window matched to interior wall)
 			if(sbElem) {
 				auto& ops = sbElem->m_containedOpenings;
 				if(std::find(ops.begin(), ops.end(), currOp.m_id) == ops.end())
 					continue;
 			}
 
-			// extend search distance by construction thickness
 			double searchDist = convertOptions.m_openingDistance;
 			if(sbElem)
 				searchDist = std::max(sbElem->thickness(), searchDist);
 			searchDist *= 1.1;
 
-			std::shared_ptr<BuildingElement> openingElem;
-			// has no construction - its a breakout
-			if(currOp.openingElementIds().size() == 1) {
-				int id = currOp.openingElementIds().front();
-				openingElem = buildingElements.fromID(id);
-			}
-			// multiple opening elements (e.g. curtain wall) - pick first window/door, fallback to first element
-			else if(currOp.openingElementIds().size() > 1) {
-				for(int id : currOp.openingElementIds()) {
-					std::shared_ptr<BuildingElement> elem = buildingElements.fromID(id);
-					if(elem && isOpeningType(elem->type())) {
-						openingElem = elem;
-						break;
-					}
-				}
-				if(!openingElem) {
-					int id = currOp.openingElementIds().front();
-					openingElem = buildingElements.fromID(id);
-				}
-			}
-
-			searchOpeningSpaceBoundaries(currOp, spaceBoundary, openingElem, convertOptions, openingSpaceBoundaries, *this, searchDist);
+			considerCandidate(currOp, spaceBoundary, resolveOpeningElem(currOp), searchDist);
 		}
 	}
 
+	// Pass 2: commit best candidate per opening.
+	int committed = 0;
+	for(auto& entry : bestByOp) {
+		int opid = entry.first;
+		OpeningMatchCandidate& cand = entry.second;
+		auto fitOp = std::find_if(openings.begin(), openings.end(),
+								  [opid](const auto& op) -> bool { return op.m_id == opid; });
+		if(fitOp == openings.end())
+			continue;
+		if(fitOp->hasSpaceBoundary())
+			continue;
+		addOpeningSpaceBoundary(cand.mergedSurface, *fitOp, cand.parentSB, cand.openingElem,
+								m_longName, openingSpaceBoundaries, *this, convertOptions);
+		++committed;
+		Logger::instance() << "space-openings: COMMIT space='" << spaceTag << "'"
+						   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
+						   << " -> sb='" << cand.parentSB->m_name << "' area=" << cand.area;
+	}
+
+	// Per-opening diagnostic: anything considered but not committed tells us the match
+	// was rejected by guards (thin-strip) or computeOpeningMatchSurface returned invalid.
+	for(const auto& tr : traceByOp) {
+		int opid = tr.first;
+		if(bestByOp.count(opid))
+			continue;
+		auto fitOp = std::find_if(openings.begin(), openings.end(),
+								  [opid](const auto& op) -> bool { return op.m_id == opid; });
+		std::string opName = fitOp != openings.end() ? fitOp->m_name : std::string("<missing>");
+		Logger::instance() << "space-openings: NO-MATCH space='" << spaceTag << "'"
+						   << " opening id=" << opid << " name='" << opName << "'"
+						   << " candidatesConsidered=" << tr.second.considered
+						   << " validMatches=" << tr.second.validMatches
+						   << " triedSBs=[" << tr.second.triedSbNames << "]";
+	}
+
+	Logger::instance() << "space-openings: END space='" << spaceTag << "' id=" << m_id
+					   << " committed=" << committed
+					   << " considered=" << traceByOp.size();
+
 	if(!openingSpaceBoundaries.empty()) {
 		spaceBoundaries.insert(spaceBoundaries.end(), openingSpaceBoundaries.begin(), openingSpaceBoundaries.end());
+	}
+}
+
+Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
+														 const BuildingElementsCollector& buildingElements,
+														 const ConvertOptions& convertOptions,
+														 bool ignoreContainedOpeningsFilter,
+														 bool allowCoplanarAccept) const {
+	OpeningMatchCandidate best;
+
+	// Resolve the window/door element the opening is filled by, if any.
+	std::shared_ptr<BuildingElement> openingElem;
+	if(opening.openingElementIds().size() == 1) {
+		openingElem = buildingElements.fromID(opening.openingElementIds().front());
+	}
+	else if(opening.openingElementIds().size() > 1) {
+		for(int id : opening.openingElementIds()) {
+			auto cand = buildingElements.fromID(id);
+			if(cand && isOpeningType(cand->type())) { openingElem = cand; break; }
+		}
+		if(!openingElem)
+			openingElem = buildingElements.fromID(opening.openingElementIds().front());
+	}
+
+	// Iterate this space's construction SBs, trying each one that (by m_containedOpenings)
+	// accepts this opening. Pick the match with the biggest intersection area.
+	for(const auto& sb : m_spaceBoundaries) {
+		if(!sb->isConstructionElement())
+			continue;
+		if(convertOptions.noSearchForOpenings(sb->typeRelatedElement()))
+			continue;
+
+		std::string elemGUID = sb->guidRelatedElement();
+		const std::shared_ptr<BuildingElement> sbElem = buildingElements.fromGUID(elemGUID);
+		if(!ignoreContainedOpeningsFilter && sbElem) {
+			auto& ops = sbElem->m_containedOpenings;
+			if(std::find(ops.begin(), ops.end(), opening.m_id) == ops.end())
+				continue;
+		}
+		// If sbElem is null (synthetic Missing SB) we still allow the attempt —
+		// the building-level fallback calls us precisely for orphan openings.
+
+		double searchDist = convertOptions.m_openingDistance;
+		if(sbElem)
+			searchDist = std::max(sbElem->thickness(), searchDist);
+		searchDist *= 1.1;
+
+		Surface merged = computeOpeningMatchSurface(opening, sb, convertOptions, searchDist, allowCoplanarAccept);
+		if(!merged.isValid(convertOptions.m_distanceEps))
+			continue;
+		double area = merged.area();
+		if(area > best.area) {
+			best.parentSB = sb;
+			best.openingElem = openingElem;
+			best.mergedSurface = merged;
+			best.area = area;
+		}
+	}
+	return best;
+}
+
+void Space::commitOpeningMatch(Opening& opening,
+							   const OpeningMatchCandidate& candidate,
+							   const ConvertOptions& convertOptions) {
+	if(!candidate.parentSB || candidate.area <= 0.0)
+		return;
+	std::vector<std::shared_ptr<SpaceBoundary>> tmp;
+	if(addOpeningSpaceBoundary(candidate.mergedSurface, opening, candidate.parentSB, candidate.openingElem,
+							   m_longName, tmp, *this, convertOptions)) {
+		m_spaceBoundaries.insert(m_spaceBoundaries.end(), tmp.begin(), tmp.end());
+		Logger::instance() << "space-openings: CROSS-COMMIT space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+						   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
+						   << " -> sb='" << candidate.parentSB->m_name << "' area=" << candidate.area;
 	}
 }
 
@@ -1003,6 +1196,7 @@ bool Space::evaluateSpaceBoundaryGeometry(shared_ptr<UnitConverter>& unit_conver
 
 bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 										 const BuildingElementsCollector& buildingElements,
+										 std::vector<Opening>& openings,
 										 shared_ptr<UnitConverter>& unit_converter,
 										 std::vector<ConvertError>& errors,
 										 const ConvertOptions& convertOptions) {
@@ -1058,6 +1252,57 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 //		}
 //	}
 
+	// IFC-path attaches opening SBs to construction SBs but doesn't update the
+	// matching Opening's m_spaceBoundary. Without this, Building::updateStoreys'
+	// cross-space fallback re-matches the opening and creates a SECOND attachment
+	// (named differently and with different geometry source), producing duplicate
+	// SubSurfaces in the VICUS output.
+	auto linkOpeningSBToOpening = [&](const std::shared_ptr<SpaceBoundary>& openingSB) {
+		const std::string& sbGuid = openingSB->guidRelatedElement();
+		if(sbGuid.empty())
+			return;
+		for(Opening& op : openings) {
+			if(op.hasSpaceBoundary())
+				continue;
+			// IFC4-style: SB references IfcWindow/IfcDoor — match window/door GUID via fill.
+			bool matched = false;
+			for(int eid : op.openingElementIds()) {
+				std::shared_ptr<BuildingElement> be = buildingElements.fromID(eid);
+				if(be && be->m_guid == sbGuid) {
+					matched = true;
+					break;
+				}
+			}
+			// IFC2x3 / abstractBIM-style: SB references the IfcOpeningElement itself —
+			// match against the Opening's own GUID (BBW_Haus D and similar).
+			if(!matched && op.guid() == sbGuid)
+				matched = true;
+			if(matched) {
+				openingSB->m_openingId = op.m_id;
+				op.setSpaceBoundary(openingSB);
+				return;
+			}
+		}
+	};
+
+	// Some IFC files (BBW_Haus D, etc.) have one IfcOpeningElement split into many
+	// IfcRelSpaceBoundary fragments — up to 100+ per (opening, wall) pair. Each
+	// fragment becomes a separate SubSurface in VICUS, blowing up the match rate
+	// and producing visually wrong geometry. Within a single wall SB, keep only the
+	// first opening SB per related-element GUID; drop subsequent fragments.
+	auto dedupAddContainedOpening = [](const std::shared_ptr<SpaceBoundary>& constrSB,
+									   const std::shared_ptr<SpaceBoundary>& openingSB) -> bool {
+		const std::string& guid = openingSB->guidRelatedElement();
+		if(!guid.empty()) {
+			for(const auto& sb : constrSB->containedOpeningSpaceBoundaries()) {
+				if(sb->guidRelatedElement() == guid)
+					return false; // duplicate — drop
+			}
+		}
+		constrSB->addContainedOpeningSpaceBoundaries(openingSB);
+		return true;
+	};
+
 	// try to find out which opening sb is related to which construction sb
 	std::vector<int> addedOpeningIds;
 	for(auto openingSB : openingSBs) {
@@ -1087,7 +1332,7 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 			if(samepoints.size() > 2) {
 				// heal the construction surface by merging with subsurface
 				constrSB->mergeSurface(opSurf);
-				constrSB->addContainedOpeningSpaceBoundaries(openingSB);
+				dedupAddContainedOpening(constrSB, openingSB);
 				addedOpeningIds.push_back(openingSB->m_id);
 				continue;
 			}
@@ -1097,7 +1342,7 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 					double dist = constrSurf.distanceToParallelPlane(opSurf, convertOptions.m_distanceEps);
 					bool isIntersected = constrSurf.isIntersected(opSurf);
 					if(dist <= searchDist*1.1 && isIntersected) {
-						constrSB->addContainedOpeningSpaceBoundaries(openingSB);
+						dedupAddContainedOpening(constrSB, openingSB);
 						addedOpeningIds.push_back(openingSB->m_id);
 						continue;
 					}
@@ -1129,6 +1374,26 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 			errors.push_back(ConvertError{OT_Space, m_id, "Opening space boundary id '" + std::to_string(openingSB->m_id) + "' has no connection because " + failureReasonString});
 		}
 
+	}
+
+	// Post-pass: link Openings to their attached IFC openingSBs only if the resulting
+	// SubSurface will be valid. Validation uses the FINAL constrSB->surface() (after
+	// all merges) and matches what getVicusSurface() will do at write time. Openings
+	// whose IFC SBs would produce invalid SubSurfaces stay unlinked, so the cross-space
+	// fallback in Building::updateStoreys can attempt them with its own geometry.
+	for(const auto& constrSB : constructionSBs) {
+		for(const auto& openingSB : constrSB->containedOpeningSpaceBoundaries()) {
+			// Replicate the validation chain from SpaceBoundary::getVicusSurface so the
+			// link decision matches what's actually rendered. Skip if any check fails —
+			// the cross-space fallback then has another chance to attach the opening.
+			Surface probe = constrSB->surface();
+			if(!probe.addSubSurface(openingSB->surface()))
+				continue;
+			const auto& subs = probe.subSurfaces();
+			if(subs.empty() || !VICUS::Polygon2D(subs.back().polygon()).isValid())
+				continue;
+			linkOpeningSBToOpening(openingSB);
+		}
 	}
 
 	std::vector<std::shared_ptr<SpaceBoundary>> missingOpeningSBs;
@@ -1204,7 +1469,7 @@ bool Space::updateSpaceBoundaries(const objectShapeTypeVector_t& shapes,
 	if(useSpaceBoundaries && !m_spaceBoundaries.empty()) {
 		// get space boundary types and set element id connections
 		// convert geometry and create surfaces
-		success = evaluateSpaceBoundaryFromIFC(shapes, buildingElements, unit_converter, errors, convertOptions);
+		success = evaluateSpaceBoundaryFromIFC(shapes, buildingElements, openings, unit_converter, errors, convertOptions);
 	}
 	// try to evaluate space boundaries from building element entities
 	else {

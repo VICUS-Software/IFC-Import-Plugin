@@ -172,6 +172,44 @@ public:
 	/*! Return all space boundaries of this space.*/
 	const std::vector<std::shared_ptr<SpaceBoundary>>& spaceBoundaries() const;
 
+	/*! Candidate returned by findBestOpeningMatch — represents a potential attachment
+		of one opening to a space boundary in this space, without committing it.
+	*/
+	struct OpeningMatchCandidate {
+		std::shared_ptr<SpaceBoundary>    parentSB;
+		std::shared_ptr<BuildingElement>  openingElem;
+		Surface                           mergedSurface;
+		double                            area = -1.0;
+	};
+
+	/*! Find the best-area match for the given opening among this space's own
+		construction SBs, without committing. Returns an empty candidate (area < 0)
+		if no SB in this space produces a valid match. Used by the cross-space
+		fallback at Building level.
+		\param ignoreContainedOpeningsFilter When true, try every construction SB
+		regardless of whether the SB's building element lists the opening in
+		m_containedOpenings. Used by the cross-space fallback — geometry alone decides
+		which room the opening belongs in.
+		\param allowCoplanarAccept When true, if the 2D intersection of the opening
+		face and the SB polygon is empty but both share the same plane, accept the
+		match using the opening's own polygon. This is a last-resort heuristic for
+		curtainwall-like walls where the room's SB is a partial slice of the full
+		wall face; it must only be enabled for the global Pass B fallback so per-space
+		matching can't commit an opening in the wrong (first-processed) room.
+	*/
+	OpeningMatchCandidate findBestOpeningMatch(Opening& opening,
+											   const BuildingElementsCollector& buildingElements,
+											   const ConvertOptions& convertOptions,
+											   bool ignoreContainedOpeningsFilter = false,
+											   bool allowCoplanarAccept = false) const;
+
+	/*! Commit a previously-computed match by creating a new opening SpaceBoundary,
+		attaching it to the given parent SB, and appending it to this space's SBs.
+	*/
+	void commitOpeningMatch(Opening& opening,
+							const OpeningMatchCandidate& candidate,
+							const ConvertOptions& convertOptions);
+
 	/*! If space boundaries with the same surface exist one of whem will be removed.
 	*/
 	void removeDublicatedSpaceBoundaries(const ConvertOptions& convertOptions);
@@ -266,6 +304,7 @@ private:
 	*/
 	bool evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 									  const BuildingElementsCollector& buildingElements,
+									  std::vector<Opening>& openings,
 									  shared_ptr<UnitConverter>& unit_converter,
 									  std::vector<ConvertError>& errors,
 									  const ConvertOptions& convertOptions);
