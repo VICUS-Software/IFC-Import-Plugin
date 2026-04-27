@@ -359,7 +359,46 @@ const std::vector<std::shared_ptr<SpaceBoundary> >& SpaceBoundary::containedOpen
 	return m_containedOpeningSpaceBoundaries;
 }
 
+static std::vector<IBKMK::Vector2D> mapToParentPlane(const SpaceBoundary& sb, const Surface& surface) {
+	std::vector<IBKMK::Vector2D> polyVect2D;
+	PlaneNormal plane(sb.surface().polygon());
+	for(const IBKMK::Vector3D& vect : surface.polygon()) {
+		IBKMK::Vector2D p2 = plane.convert3DPoint(vect);
+		polyVect2D.push_back(p2);
+	}
+	return polyVect2D;
+}
+
 void SpaceBoundary::addContainedOpeningSpaceBoundaries(const std::shared_ptr<SpaceBoundary>& containedOpeningSpaceBoundaries) {
+	// check if opening is at wrong position or too big
+	Surface::IntersectionResult res = m_surface.intersect2(containedOpeningSpaceBoundaries->surface());
+	const std::vector<Surface>& sBmO = res.m_diffBaseMinusClip;
+	const std::vector<Surface>& sOmB = res.m_diffClipMinusBase;
+	int resIndex = 0;
+	std::vector<SubSurface> subs;
+	// opening is too big
+	if(sBmO.empty()) {
+		resIndex = 1;
+	}
+	// opening split the original surface into pices
+	if(sBmO.size() > 1) {
+		for(const Surface& surf : sBmO) {
+			subs.emplace_back(SubSurface(surf.polygon(), m_surface.polygon()));
+		}
+		resIndex = 2;
+	}
+	// opening is too small
+	if(sOmB.empty()) {
+		resIndex = 3;
+	}
+	// opening create more than one hole
+	if(sOmB.size() > 1) {
+		for(const Surface& surf : sBmO) {
+			subs.emplace_back(SubSurface(surf.polygon(), m_surface.polygon()));
+		}
+		resIndex = 4;
+	}
+	m_subsurfaces.push_back(mapToParentPlane(*this, containedOpeningSpaceBoundaries->surface()));
 	m_containedOpeningSpaceBoundaries.push_back(containedOpeningSpaceBoundaries);
 }
 

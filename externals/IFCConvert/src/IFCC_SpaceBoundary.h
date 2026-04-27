@@ -259,6 +259,8 @@ private:
 	SpaceBoundaryLevelType										m_levelType;
 	/*! Vector of space boundaries for openings which are containd in this space boundary (subsurfaces).*/
 	std::vector<std::shared_ptr<SpaceBoundary>>					m_containedOpeningSpaceBoundaries;
+	/*! Contains polyvectors of the opening surfaces mapped to the current plane.*/
+	std::vector<std::vector<IBKMK::Vector2D>>					m_subsurfaces;
 };
 
 } // namespace IFCC

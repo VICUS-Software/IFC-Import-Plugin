@@ -108,7 +108,7 @@ public:
 	std::vector<Surface> difference(const Surface& other) const;
 
 	/*! Perform an intersection with its own bonding rect.
-	 *  Return the resulten intersections.
+	 *  Return the resulting intersections.
 	 *  This can split the original surface into different ones in case of misfitted surface.
 	*/
 	std::vector<Surface> innerIntersection() const;
