@@ -143,13 +143,15 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 	// may point to a wall whose SB's polygon doesn't contain the opening. This global
 	// sweep considers every construction SB in the building.
 	//
-	// Pass A: strict 2D intersection only (no coplanar-accept). Picks the room whose
-	// SB polygon actually geometrically contains the opening.
-	// Pass B: if Pass A finds nothing anywhere in the building, fall back to coplanar-
-	// accept — the opening lies in some wall's plane but no room's slice contains it.
-	// Coplanar-accept is deferred to this global scope so first-processed-room bias
-	// can't win over a better geometric match.
-	size_t matchedStrict = 0, matchedCoplanar = 0;
+	// Pass priority (most-trusted first):
+	//   Pass A: strict intersect AND respect IfcRelVoidsElement (host wall lists
+	//           the opening in m_containedOpenings). Trusted IFC topology — the
+	//           best signal for which room hosts the opening.
+	//   Pass B: strict intersect, ignore containedOpenings filter — reaches
+	//           IFCs with broken/missing IfcRelVoidsElement.
+	//   Pass C: coplanar-accept fallback for curtain-wall scenarios where the
+	//           room's SB is a partial slice of the full wall face.
+	size_t matchedStrict = 0, matchedTopology = 0, matchedCoplanar = 0;
 	for(Opening& op : openings) {
 		if(op.hasSpaceBoundary())
 			continue;
@@ -157,7 +159,24 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		std::shared_ptr<Space> bestSpace;
 		Space::OpeningMatchCandidate best;
 
-		// Pass A — strict intersect across every space.
+		// Pass A — strict intersect, IFC topology required.
+		for(const auto& storey : m_storeys) {
+			for(const auto& space : storey->spaces()) {
+				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
+					/*ignoreContainedOpeningsFilter=*/false, /*allowCoplanarAccept=*/false);
+				if(c.area > best.area) {
+					best = c;
+					bestSpace = space;
+				}
+			}
+		}
+		if(bestSpace && best.area > 0.0) {
+			bestSpace->commitOpeningMatch(op, best, convertOptions);
+			++matchedTopology;
+			continue;
+		}
+
+		// Pass B — strict intersect, no topology filter.
 		for(const auto& storey : m_storeys) {
 			for(const auto& space : storey->spaces()) {
 				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
@@ -168,14 +187,13 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 				}
 			}
 		}
-
 		if(bestSpace && best.area > 0.0) {
 			bestSpace->commitOpeningMatch(op, best, convertOptions);
 			++matchedStrict;
 			continue;
 		}
 
-		// Pass B — coplanar-accept fallback.
+		// Pass C — coplanar-accept fallback.
 		for(const auto& storey : m_storeys) {
 			for(const auto& space : storey->spaces()) {
 				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
@@ -193,8 +211,8 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		}
 	}
 	Logger::instance() << "Building::updateStoreys: cross-space fallback matched "
-					   << matchedStrict << " strict + " << matchedCoplanar << " coplanar"
-					   << " of " << openings.size() << " openings";
+					   << matchedTopology << " topology + " << matchedStrict << " strict + "
+					   << matchedCoplanar << " coplanar of " << openings.size() << " openings";
 
 	return true;
 }

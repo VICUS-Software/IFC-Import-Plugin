@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterable
 
 import ifcopenshell
+import ifcopenshell.geom
 import ifcopenshell.util.placement
 
 
@@ -65,10 +66,9 @@ def _dist3d(a, b):
 
 # ---- IFC placement (rotation-free origin chain — good for grid-aligned IFCs) ---
 
-def _ifc_object_centroid(elem):
-    """World-coordinate origin of the IFC element's ObjectPlacement.
-    Uses ifcopenshell.util.placement to walk the IfcLocalPlacement chain
-    accumulating the full 4x4 transformation including rotations."""
+def _ifc_placement_origin(elem):
+    """World-coordinate origin of an IFC element's ObjectPlacement, via
+    ifcopenshell.util.placement which composes the full IfcLocalPlacement chain."""
     placement = getattr(elem, "ObjectPlacement", None)
     if placement is None:
         return None
@@ -76,8 +76,72 @@ def _ifc_object_centroid(elem):
         m = ifcopenshell.util.placement.get_local_placement(placement)
     except Exception:
         return None
-    # Translation column of the 4x4 matrix
     return (float(m[0][3]), float(m[1][3]), float(m[2][3]))
+
+
+_GEOM_SETTINGS = None
+
+
+def _geom_settings():
+    global _GEOM_SETTINGS
+    if _GEOM_SETTINGS is None:
+        _GEOM_SETTINGS = ifcopenshell.geom.settings()
+        try:
+            _GEOM_SETTINGS.set(_GEOM_SETTINGS.USE_WORLD_COORDS, True)
+        except Exception:
+            try:
+                _GEOM_SETTINGS.set("use-world-coords", True)
+            except Exception:
+                pass
+    return _GEOM_SETTINGS
+
+
+def _ifc_object_centroid(elem):
+    """Best-effort centroid of an IfcWindow/IfcDoor in world coordinates.
+
+    Tries (in order):
+      1. ifcopenshell.geom.create_shape — proper geometry centroid in world coords.
+         Robust for IFCs that place window via IfcOpeningElement/host wall.
+      2. ObjectPlacement origin — fast path for windows that carry their own
+         placement.
+      3. Fallback through FillsVoids → IfcOpeningElement → host wall placement.
+    """
+    # 1: full geometry shape
+    try:
+        shape = ifcopenshell.geom.create_shape(_geom_settings(), elem)
+        if shape and getattr(shape, "geometry", None):
+            verts = shape.geometry.verts  # flat [x,y,z, x,y,z, ...]
+            if len(verts) >= 3:
+                n = len(verts) // 3
+                return (sum(verts[3 * i] for i in range(n)) / n,
+                        sum(verts[3 * i + 1] for i in range(n)) / n,
+                        sum(verts[3 * i + 2] for i in range(n)) / n)
+    except Exception:
+        pass
+
+    # 2: own placement origin
+    origin = _ifc_placement_origin(elem)
+    if origin is not None and any(abs(c) > 1e-6 for c in origin):
+        return origin
+
+    # 3: opening / host wall fallback
+    fills_inv = getattr(elem, "FillsVoids", None) or []
+    for rel_fills in fills_inv:
+        opening = getattr(rel_fills, "RelatingOpeningElement", None)
+        if opening is None:
+            continue
+        c = _ifc_placement_origin(opening)
+        if c is not None and any(abs(v) > 1e-6 for v in c):
+            return c
+        for rel_voids in (getattr(opening, "VoidsElements", None) or []):
+            host = getattr(rel_voids, "RelatingBuildingElement", None)
+            if host is None:
+                continue
+            hc = _ifc_placement_origin(host)
+            if hc is not None and any(abs(v) > 1e-6 for v in hc):
+                return hc
+
+    return origin  # may still be (0,0,0)
 
 
 # ---- IFC topology: which rooms should host this opening? -------------------
