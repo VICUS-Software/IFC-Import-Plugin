@@ -191,6 +191,15 @@ public:
 	std::vector<shared_ptr<TransformData> >				m_vec_transforms;
 	std::vector<shared_ptr<ProductShapeData> >			m_vec_children;
 	std::vector<shared_ptr<AppearanceData> >			m_vec_product_appearances;
+	/*! IFCC-side guard: set to true once an IFCC::* class has applied the
+		getTransform() composed matrix to this shape's representations.
+		Prevents the placement chain from being applied multiple times when a
+		shape is reached via more than one processing path — e.g. an
+		IfcBuildingElementPart is an aggregate child of its parent wall
+		(transformed there via BuildingElement::getShapeOfParts) AND a standalone
+		similar BuildingElement (would otherwise be transformed again in its own
+		update()). */
+	bool												m_transformAppliedByIFCC = false;
 
 	ProductShapeData() {}
 	ProductShapeData( std::string entity_guid ) : m_entity_guid(entity_guid) { }

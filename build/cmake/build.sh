@@ -7,6 +7,7 @@
 #   [reldeb|release|debug]		build type
 #   [2 [1..n]]					cpu count
 #   [verbose]					enable cmake to call verbose makefiles
+#   [omp]						mark this as the OpenMP build (uses bb-omp-gcc as build dir)
 #   []
 
 # path export for mac
@@ -65,6 +66,12 @@ do
     if [[ $var = "verbose"  ]];
   	then
 		CMAKE_OPTIONS="-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON"
+	  fi
+
+    if [[ $var = "omp"  ]];
+    then
+		BUILD_DIR_SUFFIX="omp-$BUILD_DIR_SUFFIX"
+		echo "OpenMP build (separate build dir: bb-$BUILD_DIR_SUFFIX)..."
 	  fi
 
 done

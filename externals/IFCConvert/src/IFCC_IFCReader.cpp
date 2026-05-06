@@ -1,5 +1,7 @@
 #include "IFCC_IFCReader.h"
 
+#include <omp.h>
+
 #include "IFCC_Helper.h"
 
 #include <QDebug>
@@ -81,7 +83,7 @@ IFCReader::IFCReader() :
 	m_geometryConverter.getGeomSettings()->setNumVerticesPerCircle(16);
 	m_geometryConverter.getGeomSettings()->setMinNumVerticesPerArc(4);
 
-	Logger::instance().set("/home/fechner/Programming/IFC-Import-Plugin/IFC_Log.txt");
+	Logger::instance().set("/tmp/ifc-import-main.log");
 }
 
 IFCReader::~IFCReader() {
@@ -138,8 +140,10 @@ bool IFCReader::loadModelFromSTEPFile( const IBK::Path& filePath, shared_ptr<Bui
 	}
 
 	// open file
-	setlocale(LC_ALL, "");
-
+	// STEP files are pure ASCII with '.' as decimal separator, so use the
+	// classic "C" locale. Using std::locale("") would inherit the user's
+	// environment locale, which on minimal systems may be invalid and throw
+	// std::runtime_error("locale::facet::_S_create_c_locale name not valid").
 	std::ifstream infile;
 	bool res = IBK::open_ifstream(infile, filePath, std::ios_base::in);
 
@@ -150,7 +154,7 @@ bool IFCReader::loadModelFromSTEPFile( const IBK::Path& filePath, shared_ptr<Bui
 	}
 
 	// get length of file content
-	infile.imbue(std::locale(""));
+	infile.imbue(std::locale::classic());
 	infile.seekg( 0, std::ios::end );
 	std::streampos file_end_pos = infile.tellg();
 	infile.seekg( 0, std::ios::beg );
@@ -164,6 +168,10 @@ bool IFCReader::loadModelFromSTEPFile( const IBK::Path& filePath, shared_ptr<Bui
 
 bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::NotificationHandler* notify) {
 	clear();
+	Logger::instance().resetSteps();
+
+	Logger::instance().beginStep("read-ifc-file");
+	Logger::instance() << "file: " << filename.str();
 
 	if(notify)
 		notify->notify(0.01, "Read IFC file");
@@ -174,14 +182,17 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 		bool res = loadModelFromSTEPFile(m_filename, m_geometryConverter.getBuildingModel());
 		if(!ignoreReadError && !res) {
 			m_readCompletedSuccessfully = false;
+			Logger::instance() << "loadModelFromSTEPFile returned false; errorText=" << m_errorText;
 		}
 
 		if(notify)
 			notify->notify(1.0, "Read complete");
+		Logger::instance() << "read complete; hasError=" << (m_hasError ? 1 : 0);
 		return !m_hasError;
 	}
 	catch (std::exception& e) {
 		m_errorText = e.what();
+		Logger::instance() << "read exception: " << e.what();
 		if(!ignoreReadError) {
 			m_readCompletedSuccessfully = false;
 			m_hasError = true;
@@ -343,6 +354,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 		elemCount += elems.second.size();
 	}
 	size_t currCount = 0;
+	size_t setFailConstr = 0, setFailSimilar = 0, setFailOpening = 0;
+	size_t noSurfConstr = 0, noSurfSimilar = 0, noSurfOpening = 0;
 
 	m_buildingElements.clear();
 	for(auto& elems : m_elementEntitesShape) {
@@ -359,46 +372,70 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 
 			if(isConstructionType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first))
+				if(!bElem->set(e, elems.first)) {
+					++setFailConstr;
+					Logger::instance() << "set() FAILED constr type=" << (int)elems.first
+									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
+				}
 
 				m_buildingElements.m_constructionElements.push_back( bElem);
 				BuildingElement& currbElem = *m_buildingElements.m_constructionElements.back();
 
-				Logger::instance() << "update constr nr: " << currCount << " of " << elemCount;
-
 				currbElem.getShapeOfParts(m_elementEntitesShape[BET_BuildingElementPart], m_convertErrors);
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
-				if(currbElem.surfaces().empty())
+				if(currbElem.surfaces().empty()) {
+					++noSurfConstr;
+					Logger::instance() << "no surfaces constr type=" << (int)elems.first
+									   << " id=" << currbElem.m_id
+									   << " ifcTag=#" << e->m_tag
+									   << " name='" << currbElem.m_name << "'";
 					m_buildingElements.m_elementsWithoutSurfaces.push_back(m_buildingElements.m_constructionElements.back());
+				}
 			}
 			else if(isConstructionSimilarType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first))
+				if(!bElem->set(e, elems.first)) {
+					++setFailSimilar;
+					Logger::instance() << "set() FAILED similar type=" << (int)elems.first
+									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
+				}
 
 				m_buildingElements.m_constructionSimilarElements.push_back(bElem);
 				BuildingElement& currbElem = *m_buildingElements.m_constructionSimilarElements.back();
 
-				Logger::instance() << "update similar " << currCount << " of " << elemCount;
-
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
-				if(currbElem.surfaces().empty())
+				if(currbElem.surfaces().empty()) {
+					++noSurfSimilar;
+					Logger::instance() << "no surfaces similar type=" << (int)elems.first
+									   << " id=" << currbElem.m_id
+									   << " ifcTag=#" << e->m_tag
+									   << " name='" << currbElem.m_name << "'";
 					m_buildingElements.m_elementsWithoutSurfaces.push_back(m_buildingElements.m_constructionSimilarElements.back());
+				}
 			}
 			else if(isOpeningType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first))
+				if(!bElem->set(e, elems.first)) {
+					++setFailOpening;
+					Logger::instance() << "set() FAILED opening type=" << (int)elems.first
+									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
+				}
 
 				m_buildingElements.m_openingElements.push_back(bElem);
 				BuildingElement& currbElem = *m_buildingElements.m_openingElements.back();
 
-				Logger::instance() << "update opening " << currCount << " of " << elemCount;
-
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
-				if(currbElem.surfaces().empty())
+				if(currbElem.surfaces().empty()) {
+					++noSurfOpening;
+					Logger::instance() << "no surfaces opening type=" << (int)elems.first
+									   << " id=" << currbElem.m_id
+									   << " ifcTag=#" << e->m_tag
+									   << " name='" << currbElem.m_name << "'";
 					m_buildingElements.m_elementsWithoutSurfaces.push_back(m_buildingElements.m_openingElements.back());
+				}
 			}
 			else {
 	// 			std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
@@ -414,6 +451,13 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 			}
 		}
 	}
+	Logger::instance() << "updateBuildingElements summary:"
+					   << " set()-fails constr=" << setFailConstr
+					   << " similar=" << setFailSimilar
+					   << " opening=" << setFailOpening
+					   << " ; no-surface constr=" << noSurfConstr
+					   << " similar=" << noSurfSimilar
+					   << " opening=" << noSurfOpening;
 }
 
 const ConvertOptions &IFCReader::convertOptions() const {
@@ -457,6 +501,17 @@ void IFCReader::setWritingBuildingElements(bool constructions, bool buildingElem
 	m_convertOptions.m_writeOtherElements = other;
 }
 
+void IFCReader::setWriteShadingObjects(bool construction, bool similar, bool opening, bool other) {
+	m_convertOptions.m_writeShadingConstruction = construction;
+	m_convertOptions.m_writeShadingSimilar = similar;
+	m_convertOptions.m_writeShadingOpening = opening;
+	m_convertOptions.m_writeShadingOther = other;
+}
+
+void IFCReader::setMergeShadingCoplanarFaces(bool enabled) {
+	m_convertOptions.m_mergeShadingCoplanarFaces = enabled;
+}
+
 void IFCReader::setMinimumCheckValues(double minimumDistance, double minimumArea, double polygonEpsilon) {
 	m_convertOptions.m_distanceEps = minimumDistance;
 	m_convertOptions.m_minimumSurfaceArea = minimumArea;
@@ -482,7 +537,8 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 	if(notify)
 		notify->notify(0.0, "Start converting");
 
-	Logger::instance() << "start convert";
+	Logger::instance().beginStep("convert-start");
+	Logger::instance() << "start convert; useSpaceBoundaries=" << (useSpaceBoundaries ? 1 : 0);
 
 	clearConvertData();
 
@@ -491,7 +547,9 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 	bool subtractOpenings = false;
 
 	// get project
+	Logger::instance().beginStep("get-project");
 	const std::map<int, shared_ptr<BuildingEntity> >& map_entities = m_model->getMapIfcEntities();
+	Logger::instance() << "map_entities size=" << map_entities.size();
 	for (auto it = map_entities.begin(); it != map_entities.end(); ++it) {
 		shared_ptr<BuildingEntity> obj = it->second;
 		if (obj) {
@@ -511,20 +569,31 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 
 		if(notify)
 			notify->notify(0.05, "Convert geometry");
+		Logger::instance().beginStep("convert-geometry");
 		// convert IFC geometric representations into Carve geometry
 		const double length_in_meter = m_geometryConverter.getBuildingModel()->getUnitConverter()->getLengthInMeterFactor();
+		Logger::instance() << "length_in_meter=" << length_in_meter
+						   << " minimumSurfaceArea=" << m_convertOptions.m_minimumSurfaceArea;
 		m_geometryConverter.getGeomSettings()->setMinimumSurfaceArea(m_convertOptions.m_minimumSurfaceArea);
 		m_geometryConverter.setCsgEps(1.5e-08 * length_in_meter);
 		m_geometryConverter.convertGeometry(subtractOpenings, m_convertErrors);
+		Logger::instance() << "convertGeometry done; convertErrors=" << m_convertErrors.size();
 
 		if(notify)
 			notify->notify(0.20, "Split shape data");
 
+		Logger::instance().beginStep("split-shape-data");
 		splitShapeData();
+		Logger::instance() << "shapes: elements=" << m_elementEntitesShape.size()
+						   << " buildings=" << m_buildingsShape.size()
+						   << " storeys=" << m_storeysShape.size()
+						   << " spaces=" << m_spaceEntitesShape.size()
+						   << " openings=" << m_openingsShape.size();
 
 		if(notify)
 			notify->notify(0.25, "Create openings");
 
+		Logger::instance().beginStep("create-openings");
 		m_openings.clear();
 		{
 			ProgressHandler openingsProgress = makeSubRange(notify, 0.25, 0.35);
@@ -546,14 +615,20 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 				}
 			}
 		}
+		Logger::instance() << "openings created=" << m_openings.size();
 
 		try {
 			if(notify)
 				notify->notify(0.35, "Update building elements");
+			Logger::instance().beginStep("update-building-elements");
 			ProgressHandler buildElemProgress = makeSubRange(notify, 0.35, 0.55);
 			updateBuildingElements(&buildElemProgress);
 
-			Logger::instance() << "updateBuildingElements";
+			Logger::instance() << "updateBuildingElements done"
+							   << " construction=" << m_buildingElements.m_constructionElements.size()
+							   << " similar=" << m_buildingElements.m_constructionSimilarElements.size()
+							   << " opening=" << m_buildingElements.m_openingElements.size()
+							   << " withoutSurfaces=" << m_buildingElements.m_elementsWithoutSurfaces.size();
 		}
 		catch (std::exception& e) {
 			ConvertError err;
@@ -576,6 +651,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 
 		if(notify)
 			notify->notify(0.55, "Set containing elements");
+		Logger::instance().beginStep("set-containing-elements");
 		{
 			ProgressHandler containProgress = makeSubRange(notify, 0.55, 0.60);
 			size_t totalOpeningElems = m_buildingElements.m_openingElements.size();
@@ -590,7 +666,8 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 			}
 		}
 
-		Logger::instance() << "setContainingElements";
+		Logger::instance() << "setContainingElements done; openingElements processed="
+						   << m_buildingElements.m_openingElements.size();
 
 		for(const auto& elem : m_buildingElements.m_elementsWithoutSurfaces) {
 			m_convertErrors.push_back({OT_BuildingElement, elem->m_id, "Building element has no surface"});
@@ -598,21 +675,25 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 
 		if(notify)
 			notify->notify(0.60, "Match openings");
+		Logger::instance().beginStep("match-openings");
 		{
 			ProgressHandler matchProgress = makeSubRange(notify, 0.60, 0.70);
 			checkAndMatchOpeningsToConstructions(&matchProgress);
 		}
-
-		Logger::instance() << "collect data start";
+		Logger::instance() << "match-openings done";
 
 		if(notify)
 			notify->notify(0.70, "Collect data");
+		Logger::instance().beginStep("collect-data");
 		m_database.collectData(m_buildingElements);
-
-		Logger::instance() << "collectData";
+		Logger::instance() << "collectData done; materials=" << m_database.m_materials.size()
+						   << " constructions=" << m_database.m_constructions.size()
+						   << " windows=" << m_database.m_windows.size()
+						   << " windowGlazings=" << m_database.m_windowGlazings.size();
 
 		if(notify)
 			notify->notify(0.72, "Update storeys");
+		Logger::instance().beginStep("update-storeys");
 
 		bool siteExist = m_siteShape != nullptr;
 		if(m_siteShape == nullptr) {
@@ -658,21 +739,29 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 			return false;
 		}
 
-		Logger::instance() << "updateStoreys";
+		Logger::instance() << "updateStoreys done; buildings=" << m_site.m_buildings.size();
 
 		if(m_repairFlags.m_removeDoubledSBs) {
+			Logger::instance().beginStep("remove-doubled-sbs");
 			std::vector<std::shared_ptr<Space>> spaces = m_site.allSpaces();
 
 			for(auto space : spaces) {
 				space->removeDublicatedSpaceBoundaries(m_convertOptions);
 			}
+			Logger::instance() << "removeDoubledSBs done; spaces=" << spaces.size();
 		}
 
 		if(notify)
 			notify->notify(0.97, "Collect component instances");
+		Logger::instance().beginStep("collect-component-instances");
 		m_instances.collectComponentInstances(m_buildingElements, m_database, m_site, m_convertErrors, m_convertOptions);
 
-		Logger::instance() << "collectComponentInstances";
+		Logger::instance() << "collectComponentInstances done";
+
+		if(notify)
+			notify->notify(0.98, "Unify components");
+		Logger::instance().beginStep("unify-components");
+		m_database.unifyComponents(m_instances);
 
 		if(!m_convertErrors.empty()) {
 			m_hasError = true;
@@ -683,7 +772,9 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 
 		if(notify)
 			notify->notify(1.0, "Convert completed successfully");
-		Logger::instance() << "m_convertCompletedSuccessfully";
+		Logger::instance().beginStep("convert-done");
+		Logger::instance() << "convert completed successfully; errors=" << m_convertErrors.size()
+						   << " hasError=" << (m_hasError ? 1 : 0);
 
 		return true;
 
@@ -694,6 +785,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		err.m_errorText = "Exception: '" + std::string(e.what()) + "' while converting ifc file.";
 		m_convertErrors.push_back(err);
 		m_hasError = true;
+		Logger::instance() << "convert exception: " << e.what();
 
 		return false;
 	}
@@ -861,6 +953,43 @@ VICUS::Project IFCReader::buildVicusProject() const {
 	m_database.addToVicusProject(&project, idMap);
 	m_site.addToVicusProject(&project, m_convertOptions);
 	m_instances.addToVicusProject(&project, m_database, idMap);
+
+	const bool anyShading = m_convertOptions.m_writeShadingConstruction
+							|| m_convertOptions.m_writeShadingSimilar
+							|| m_convertOptions.m_writeShadingOpening
+							|| m_convertOptions.m_writeShadingOther;
+	if(anyShading) {
+		const size_t shadingStart = project.m_shadingObjects.size();
+		auto appendShadingObjects = [&](const std::vector<std::shared_ptr<BuildingElement>>& elements,
+										const char* label) {
+			size_t addedObjects = 0;
+			size_t addedSurfaces = 0;
+			for(const std::shared_ptr<BuildingElement>& be : elements) {
+				if(!be)
+					continue;
+				VICUS::ShadingObject so = be->getVicusShadingObject(m_convertOptions);
+				if(so.m_id == INVALID_ID)
+					continue;
+				addedSurfaces += so.m_surfaces.size();
+				project.m_shadingObjects.push_back(so);
+				++addedObjects;
+			}
+			Logger::instance() << "shadingExport " << label
+							   << " elements=" << elements.size()
+							   << " exported=" << addedObjects
+							   << " surfaces=" << addedSurfaces;
+		};
+		if(m_convertOptions.m_writeShadingConstruction)
+			appendShadingObjects(m_buildingElements.m_constructionElements, "construction");
+		if(m_convertOptions.m_writeShadingSimilar)
+			appendShadingObjects(m_buildingElements.m_constructionSimilarElements, "similar");
+		if(m_convertOptions.m_writeShadingOpening)
+			appendShadingObjects(m_buildingElements.m_openingElements, "opening");
+		if(m_convertOptions.m_writeShadingOther)
+			appendShadingObjects(m_buildingElements.m_otherElements, "other");
+		Logger::instance() << "shadingExport total shading objects added="
+						   << (project.m_shadingObjects.size() - shadingStart);
+	}
 	return project;
 }
 
@@ -1065,19 +1194,70 @@ bool IFCReader::typeByGuid(const std::string& guid, std::pair<BuildingElementTyp
 }
 
 void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* notify) {
-	Logger::instance() << "checkAndMatchOpeningsToConstructions";
+	Logger::instance() << "checkAndMatchOpeningsToConstructions;"
+					   << " openings=" << m_openings.size()
+					   << " candidateElements=" << m_buildingElements.m_openingElements.size()
+					   << " openingDistance=" << m_convertOptions.m_openingDistance
+					   << " distanceEps=" << m_convertOptions.m_distanceEps;
 
-	size_t totalOpenings = m_openings.size();
-	size_t currOpening = 0;
-	for(Opening& opening : m_openings) {
-		++currOpening;
-		if(notify != nullptr && totalOpenings > 0)
-			notify->notify(double(currOpening) / double(totalOpenings));
-		if(opening.isConnectedToOpeningElement())
+	const std::ptrdiff_t totalOpenings = static_cast<std::ptrdiff_t>(m_openings.size());
+
+	// Match-outcome tallies (tell us *why* matching succeeds or fails). Aggregated
+	// via OpenMP reduction so the counters are race-free without atomics.
+	size_t preMatched = 0;         // already linked via IFC relations
+	size_t matched = 0;            // matched by distance+intersection here
+	size_t unmatched = 0;          // no candidate accepted
+	size_t emptyOpeningSurfs = 0;  // opening has no surfaces -> cannot match
+	size_t noCandidates = 0;       // unmatched AND no element's plane was parallel within eps
+	size_t distTooFar = 0;         // unmatched AND best parallel-plane distance > openingDistance
+	size_t notIntersected = 0;     // unmatched AND a parallel candidate existed within distance but none intersected
+	size_t processed = 0;          // for progress notification
+
+	// Each iteration only mutates the current Opening (addOpeningElementId), shared
+	// data (m_buildingElements.m_openingElements, m_convertOptions) is read-only.
+	// Thread budget: leave 2 cores free for OS/GUI on machines with >=4 cores.
+	const int numProcs = omp_get_num_procs();
+	const int numThreads = (numProcs >= 4) ? (numProcs - 2)
+	                     : (numProcs >= 2) ? (numProcs - 1)
+	                                       : 1;
+
+	#pragma omp parallel for schedule(dynamic) num_threads(numThreads) \
+		reduction(+:preMatched,matched,unmatched,emptyOpeningSurfs, \
+		            noCandidates,distTooFar,notIntersected,processed)
+	for(std::ptrdiff_t i = 0; i < totalOpenings; ++i) {
+		Opening& opening = m_openings[static_cast<size_t>(i)];
+
+		++processed;
+		// Notify must run on the GUI thread (Qt processEvents); serialize.
+		#pragma omp critical(ifcc_match_openings_notify)
+		{
+			if(notify != nullptr && totalOpenings > 0)
+				notify->notify(double(processed) / double(totalOpenings));
+		}
+
+		if(opening.isConnectedToOpeningElement()) {
+			++preMatched;
 			continue;
+		}
+
+		if(opening.surfaces().empty()) {
+			++emptyOpeningSurfs;
+			++unmatched;
+			#pragma omp critical(ifcc_logger)
+			{
+				Logger::instance() << "opening has no surfaces; id=" << opening.m_id
+								   << " ifcTag=#" << opening.m_ifcId
+								   << " name='" << opening.m_name << "'";
+			}
+			continue;
+		}
 
 		double currDist = 1e20;
 		int constructionId = -1;
+		// Track why we rejected candidates, so unmatched openings are diagnosable:
+		double bestParallelDist = 1e20; // min distance seen for any parallel pair
+		bool anyParallelWithinRange = false;
+		bool anyIntersectedWithinRange = false;
 		// loop over all opening element constructions
 		for(const auto& elem : m_buildingElements.m_openingElements) {
 			for(size_t cosi=0; cosi<opening.surfaces().size(); ++cosi) {
@@ -1085,11 +1265,17 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 
 				for(const Surface& constructionSurf : elem->surfaces()) {
 					double dist = currentOpeningSurf.distanceToParallelPlane(constructionSurf, m_convertOptions.m_distanceEps);
+					// dist == 1e20 means planes are not parallel — ignore for diagnostics
+					if(dist < bestParallelDist)
+						bestParallelDist = dist;
+
 					if(dist > m_convertOptions.m_openingDistance)
 						continue;
 
+					anyParallelWithinRange = true;
 					bool intersected = constructionSurf.isIntersected(currentOpeningSurf);
 					if(intersected) {
+						anyIntersectedWithinRange = true;
 						if(dist < currDist) {
 							currDist = dist;
 							constructionId = elem->m_id;
@@ -1100,10 +1286,45 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 
 		} // building element id loop
 
-		if(constructionId > -1)
+		if(constructionId > -1) {
 			opening.addOpeningElementId(constructionId);
+			++matched;
+		}
+		else {
+			++unmatched;
+			const char* reason;
+			if(!anyParallelWithinRange && bestParallelDist >= 1e19) {
+				reason = "no-parallel-candidate";
+				++noCandidates;
+			}
+			else if(!anyParallelWithinRange) {
+				reason = "parallel-but-distance-too-far";
+				++distTooFar;
+			}
+			else {
+				reason = "parallel-in-range-but-no-intersection";
+				++notIntersected;
+			}
+			#pragma omp critical(ifcc_logger)
+			{
+				Logger::instance() << "unmatched opening id=" << opening.m_id
+								   << " ifcTag=#" << opening.m_ifcId
+								   << " name='" << opening.m_name << "'"
+								   << " surfaces=" << opening.surfaces().size()
+								   << " bestParallelDist=" << bestParallelDist
+								   << " reason=" << reason;
+			}
+		}
 	} // opening loop
 
+	Logger::instance() << "checkAndMatchOpeningsToConstructions summary:"
+					   << " preMatched=" << preMatched
+					   << " matched=" << matched
+					   << " unmatched=" << unmatched
+					   << " (emptySurfs=" << emptyOpeningSurfs
+					   << " noParallelCandidate=" << noCandidates
+					   << " distTooFar=" << distTooFar
+					   << " notIntersected=" << notIntersected << ")";
 }
 
 } // end namespace

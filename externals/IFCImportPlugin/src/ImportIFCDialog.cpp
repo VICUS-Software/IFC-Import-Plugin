@@ -21,6 +21,12 @@ ImportIFCDialog::ImportIFCDialog(QWidget *parent, IFCC::IFCReader* reader) :
 	ui->checkBoxWriteConstructions->setChecked(m_reader->convertOptions().m_writeConstructionElements);
 	ui->checkBoxWriteOpenings->setChecked(m_reader->convertOptions().m_writeOpeningElements);
 	ui->checkBoxWriteAllOthers->setChecked(m_reader->convertOptions().m_writeOtherElements);
+	{
+		const IFCC::ConvertOptions & co = m_reader->convertOptions();
+		ui->checkBoxWriteShadingObjects->setChecked(
+			co.m_writeShadingConstruction || co.m_writeShadingSimilar
+			|| co.m_writeShadingOpening || co.m_writeShadingOther);
+	}
 
 	for(auto type : IFCC::constructionTypes()) {
 		QListWidgetItem *item = new QListWidgetItem(elementTypeText(type));
@@ -407,6 +413,16 @@ void ImportIFCDialog::initElements() {
 										 ui->checkBoxWriteBuildingElements->isChecked(),
 										 ui->checkBoxWriteOpenings->isChecked(),
 										 ui->checkBoxWriteAllOthers->isChecked());
+	{
+		// Single checkbox enables shading export for construction, similar AND openings.
+		// Opening elements (IfcWindow, IfcDoor) are exported with their real geometry
+		// (glass panes, frames, hardware) that sits inside the window hole already cut
+		// into the parent wall shading surface via the coplanar-merge pipeline, so the
+		// two layers combine to form the full wall+window picture. 'other' is not
+		// populated by the reader at all, so leaving it off is free.
+		const bool shadingOn = ui->checkBoxWriteShadingObjects->isChecked();
+		m_reader->setWriteShadingObjects(shadingOn, shadingOn, shadingOn, false);
+	}
 
 	// with conversions into basic SI units m and m2
 	m_reader->setMinimumCheckValues(ui->doubleSpinBoxMinimumDistance->value() / 1000.0, ui->doubleSpinBoxMinimumArea->value() / 10000.0,
@@ -519,6 +535,12 @@ void ImportIFCDialog::initConvertOptions() {
 	ui->checkBoxWriteConstructions->setChecked(m_reader->convertOptions().m_writeConstructionElements);
 	ui->checkBoxWriteOpenings->setChecked(m_reader->convertOptions().m_writeOpeningElements);
 	ui->checkBoxWriteAllOthers->setChecked(m_reader->convertOptions().m_writeOtherElements);
+	{
+		const IFCC::ConvertOptions & co = m_reader->convertOptions();
+		ui->checkBoxWriteShadingObjects->setChecked(
+			co.m_writeShadingConstruction || co.m_writeShadingSimilar
+			|| co.m_writeShadingOpening || co.m_writeShadingOther);
+	}
 	ui->checkBoxSurfaceWritingMethod->setChecked(m_reader->convertOptions().m_useOldPolygonWriting);
 }
 

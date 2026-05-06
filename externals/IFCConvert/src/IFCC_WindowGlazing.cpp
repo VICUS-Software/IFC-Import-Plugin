@@ -1,11 +1,15 @@
 #include "IFCC_WindowGlazing.h"
 
+#include <QColor>
+#include <QString>
+
 namespace IFCC {
 
 WindowGlazing::WindowGlazing() :
 	m_id(-1),
 	m_modelType(0),
-	m_thermalTransmittance(0)
+	m_thermalTransmittance(0),
+	m_shgc(0)
 {
 
 }
@@ -40,6 +44,14 @@ VICUS::WindowGlazingSystem WindowGlazing::getVicusObject(std::map<int,int>& idMa
 	vwg.m_modelType = static_cast<VICUS::WindowGlazingSystem::modelType_t>(m_modelType);
 	if(m_thermalTransmittance > 0)
 		vwg.m_para[VICUS::WindowGlazingSystem::P_ThermalTransmittance].set("ThermalTransmittance", m_thermalTransmittance, "W/m2K");
+	if(m_shgc > 0)
+		vwg.m_para[VICUS::WindowGlazingSystem::P_SHGCHemis].set("SHGCHemis", m_shgc, "---");
+
+	if(!m_color.empty()) {
+		QColor c(QString::fromStdString(m_color));
+		if(c.isValid())
+			vwg.m_color = c;
+	}
 
 	return vwg;
 }

@@ -1,5 +1,8 @@
 #include "IFCC_SubSurfaceComponent.h"
 
+#include <QColor>
+#include <QString>
+
 namespace IFCC {
 
 SubSurfaceComponent::SubSurfaceComponent() :
@@ -50,6 +53,11 @@ VICUS::SubSurfaceComponent SubSurfaceComponent::getVicusObject(std::map<int,int>
 		auto fit = idMap.find(m_constructionId);
 		if(fit != idMap.end())
 			vssc.m_idConstruction = fit->second;
+	}
+	if(!m_color.empty()) {
+		QColor c(QString::fromStdString(m_color));
+		if(c.isValid())
+			vssc.m_color = c;
 	}
 	return vssc;
 }

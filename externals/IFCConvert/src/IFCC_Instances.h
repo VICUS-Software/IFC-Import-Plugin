@@ -48,6 +48,12 @@ public:
 	*/
 	void addToVicusProject(VICUS::Project* project, const Database& database, const std::map<int,int>& idMap) const;
 
+	/*! Rewrite componentId on every stored instance per the given old→new remap
+		tables. Used by Database::unifyComponents after duplicate components have
+		been merged so instances continue to reference a valid component id.
+	*/
+	void remapComponentIds(const std::map<int,int>& mainRemap, const std::map<int,int>& subRemap);
+
 private:
 
 	/*! Collect component and subsurface component instances from building elements and other databases.

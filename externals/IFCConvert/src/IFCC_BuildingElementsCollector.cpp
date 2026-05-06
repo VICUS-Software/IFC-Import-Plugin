@@ -7,56 +7,53 @@
 
 namespace IFCC {
 
-const std::shared_ptr<BuildingElement> BuildingElementsCollector::fromGUID(const std::string& guid) const {
-	for(auto elem : m_constructionElements) {
-		if(elem->m_guid == guid)
-			return elem;
+void BuildingElementsCollector::buildLookupCaches() const {
+	// Caller must hold m_cacheMutex.
+	const std::vector<const std::vector<std::shared_ptr<BuildingElement>>*> all = {
+		&m_constructionElements,
+		&m_constructionSimilarElements,
+		&m_openingElements,
+		&m_otherElements,
+		&m_elementsWithoutSurfaces
+	};
+	size_t total = 0;
+	for(const std::vector<std::shared_ptr<BuildingElement>>* v : all)
+		total += v->size();
+	m_byGUID.reserve(total);
+	m_byID.reserve(total);
+	for(const std::vector<std::shared_ptr<BuildingElement>>* v : all) {
+		for(const std::shared_ptr<BuildingElement>& elem : *v) {
+			if(!elem)
+				continue;
+			// First entry wins on duplicate GUIDs, mirroring the original
+			// vector-scan order (m_constructionElements first).
+			m_byGUID.emplace(elem->m_guid, elem);
+			m_byID.emplace(elem->m_id, elem);
+		}
 	}
-	for(auto elem : m_constructionSimilarElements) {
-		if(elem->m_guid == guid)
-			return elem;
-	}
-	for(auto elem : m_openingElements) {
-		if(elem->m_guid == guid)
-			return elem;
-	}
-	for(auto elem : m_otherElements) {
-		if(elem->m_guid == guid)
-			return elem;
-	}
-	for(auto elem : m_elementsWithoutSurfaces) {
-		if(elem->m_guid == guid)
-			return elem;
-	}
-
-	return {};	  // std::shared_ptr<BuildingElement>(nullptr);
+	m_cachesBuilt = true;
 }
+
+
+const std::shared_ptr<BuildingElement> BuildingElementsCollector::fromGUID(const std::string& guid) const {
+	std::lock_guard<std::mutex> lock(m_cacheMutex);
+	if(!m_cachesBuilt)
+		buildLookupCaches();
+	auto it = m_byGUID.find(guid);
+	if(it == m_byGUID.end())
+		return {};
+	return it->second;
+}
+
 
 std::shared_ptr<BuildingElement> BuildingElementsCollector::fromID(int id) const {
-	for(auto elem : m_constructionElements) {
-		if(elem->m_id == id)
-			return elem;
-	}
-	for(auto elem : m_constructionSimilarElements) {
-		if(elem->m_id == id)
-			return elem;
-	}
-	for(auto elem : m_openingElements) {
-		if(elem->m_id == id)
-			return elem;
-	}
-	for(auto elem : m_otherElements) {
-		if(elem->m_id == id)
-			return elem;
-	}
-	for(auto elem : m_elementsWithoutSurfaces) {
-		if(elem->m_id == id)
-			return elem;
-	}
-
-	return {};	  // std::shared_ptr<BuildingElement>(nullptr);
-
+	std::lock_guard<std::mutex> lock(m_cacheMutex);
+	if(!m_cachesBuilt)
+		buildLookupCaches();
+	auto it = m_byID.find(id);
+	if(it == m_byID.end())
+		return {};
+	return it->second;
 }
-
 
 } // namespace IFCC

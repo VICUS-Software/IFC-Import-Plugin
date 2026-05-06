@@ -2,6 +2,9 @@
 
 #include <set>
 
+#include <QColor>
+#include <QString>
+
 #include <Carve/src/include/carve/carve.hpp>
 
 #include "IFCC_MeshUtils.h"
@@ -348,6 +351,65 @@ void Instances::addToVicusProject(VICUS::Project* project, const Database& datab
 	if(skippedNormal > 0 || skippedSub > 0) {
 		Logger::instance() << "Warning: Skipped " << skippedNormal << " component instances and "
 			<< skippedSub << " sub-surface component instances referencing non-existing surfaces";
+	}
+
+	// ---- Color propagation ----
+	// Main components have no VICUS::Component counterpart (VICUS::ComponentInstance
+	// references a Construction directly), so surface tinting is the only way to
+	// express the unified component coloring in the VICUS output. Build a map of
+	// surface id -> QColor from the component each instance references, then apply
+	// it to every VICUS::Surface in every room.
+	std::map<unsigned int, QColor> surfaceColor;
+	for(const auto& ci : m_componentInstances) {
+		auto fitComp = database.m_components.find(ci.second.componentId());
+		if(fitComp == database.m_components.end())
+			continue;
+		const std::string& hex = fitComp->second.m_color;
+		if(hex.empty())
+			continue;
+		QColor c(QString::fromStdString(hex));
+		if(!c.isValid())
+			continue;
+		int sideA = ci.second.sideASurfaceId();
+		int sideB = ci.second.sideBSurfaceId();
+		if(sideA >= 0) surfaceColor[static_cast<unsigned int>(sideA)] = c;
+		if(sideB >= 0) surfaceColor[static_cast<unsigned int>(sideB)] = c;
+	}
+
+	if(!surfaceColor.empty()) {
+		for(auto& building : project->m_buildings) {
+			for(auto& level : building.m_buildingLevels) {
+				for(auto& room : level.m_rooms) {
+					// Surface is stored inside VICUS::Room via setSurfaces(); mutate in
+					// place via the non-const accessor.
+					std::vector<VICUS::Surface> updated = room.surfaces();
+					bool changed = false;
+					for(VICUS::Surface& s : updated) {
+						auto fit = surfaceColor.find(s.m_id);
+						if(fit != surfaceColor.end()) {
+							s.m_displayColor = fit->second;
+							changed = true;
+						}
+					}
+					if(changed)
+						room.setSurfaces(updated);
+				}
+			}
+		}
+	}
+}
+
+
+void Instances::remapComponentIds(const std::map<int,int>& mainRemap, const std::map<int,int>& subRemap) {
+	for(auto& kv : m_componentInstances) {
+		auto fit = mainRemap.find(kv.second.componentId());
+		if(fit != mainRemap.end())
+			kv.second.setComponentId(fit->second);
+	}
+	for(auto& kv : m_subSurfaceComponentInstances) {
+		auto fit = subRemap.find(kv.second.componentId());
+		if(fit != subRemap.end())
+			kv.second.setComponentId(fit->second);
 	}
 }
 

@@ -55,6 +55,17 @@ public:
 	bool							m_writeBuildingElements = false;
 	bool							m_writeOpeningElements = false;
 	bool							m_writeOtherElements = false;
+	/*! Per-category flags controlling the shading-object export in VICUS::Project::m_shadingObjects.
+		Independent from the component-instance pipeline. Each flag maps to one
+		BuildingElementsCollector bucket. */
+	bool							m_writeShadingConstruction = false;	///< Walls, slabs, roofs (m_constructionElements)
+	bool							m_writeShadingSimilar = false;		///< Beams, columns, covering, footing, curtain wall (m_constructionSimilarElements)
+	bool							m_writeShadingOpening = false;		///< Windows, doors (m_openingElements)
+	bool							m_writeShadingOther = false;		///< Anything else (m_otherElements — currently not populated)
+	/*! If true, coplanar faces of a single building element are unioned via clipper
+		before being exported as shading surfaces. Drastically reduces the per-face
+		explosion for CSG-subtracted walls, window assemblies, covering tiles, etc. */
+	bool							m_mergeShadingCoplanarFaces = true;
 	bool							m_useCSGForOpenings = false;
 	bool							m_useOldPolygonWriting = false;
 

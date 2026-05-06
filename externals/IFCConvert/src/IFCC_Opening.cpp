@@ -45,10 +45,17 @@ void Opening::transform(std::shared_ptr<ProductShapeData> productShape) {
 	if(productShape == nullptr)
 		return;
 
+	if(productShape->m_transformAppliedByIFCC)
+		return;
+
 	carve::math::Matrix transformMatrix = productShape->getTransform();
 	if(transformMatrix != carve::math::Matrix::IDENT()) {
-		productShape->applyTransformToProduct(transformMatrix, true, true);
+		// applyToChildren=false: same reasoning as Site/Space/BuildingElement.
+		// Each product has its own composed placement chain in m_vec_transforms and
+		// its own transform() call. Recursing here would double-apply.
+		productShape->applyTransformToProduct(transformMatrix, true, false);
 	}
+	productShape->m_transformAppliedByIFCC = true;
 }
 
 void Opening::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std::vector<ConvertError>& errors) {

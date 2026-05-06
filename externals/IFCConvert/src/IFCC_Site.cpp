@@ -78,10 +78,21 @@ void Site::transform(std::shared_ptr<ProductShapeData> productShape) {
 	if(productShape == nullptr)
 		return;
 
+	if(productShape->m_transformAppliedByIFCC)
+		return;
+
 	carve::math::Matrix transformMatrix = productShape->getTransform();
 	if(transformMatrix != carve::math::Matrix::IDENT()) {
-		productShape->applyTransformToProduct(transformMatrix, true, true);
+		// applyToChildren=false: Site's m_vec_children contains Buildings (populated by
+		// GeometryConverter::resolveProjectStructure via IfcRelContainedInSpatialStructure
+		// and IfcRelAggregates). Building's children contain Storeys; Storey's children
+		// contain Walls, Slabs, Spaces, etc. Each of those products has its own composed
+		// placement chain in m_vec_transforms (root→leaf), and its own transform() call
+		// applies that full chain. Recursively re-applying Site's matrix here would
+		// double-apply the site placement to every descendant's mesh.
+		productShape->applyTransformToProduct(transformMatrix, true, false);
 	}
+	productShape->m_transformAppliedByIFCC = true;
 }
 
 void Site::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std::vector<ConvertError>& errors) {

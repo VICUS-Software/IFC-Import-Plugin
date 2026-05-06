@@ -8,6 +8,16 @@ TEMPLATE = lib
 
 CONFIG += c++17
 
+# enable OpenMP (used to parallelize the opening-to-construction matching loop
+# and the IFC-path of BuildingStorey::updateSpaces)
+unix|mac {
+	QMAKE_CXXFLAGS += -fopenmp
+	LIBS += -fopenmp
+}
+win32-msvc* {
+	QMAKE_CXXFLAGS += /openmp
+}
+
 # this pri must be sourced from all our libraries,
 # it contains all functions defined for casual libraries
 include( ../IBK/IBK.pri )

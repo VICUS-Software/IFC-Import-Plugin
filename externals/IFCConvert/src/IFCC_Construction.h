@@ -24,6 +24,7 @@ public:
 	int									m_id;			///< Unique id of the construction
 	std::vector<std::pair<int, double>>	m_layers;		///< Vector of layers with material id and thickness in m
 	std::string							m_name;			///< Name of the construction
+	std::string							m_color;		///< Display color as "#RRGGBB" hex string (assigned by Database::unifyComponents)
 	BasicType							m_basictype;	///< Basic type of component
 
 	/*! Return the object ID.*/

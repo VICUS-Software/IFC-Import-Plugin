@@ -1009,18 +1009,28 @@ RepresentationConverter::RepresentationConverter( shared_ptr<GeometrySettings> g
 			product_shape->applyTransformToProduct(product_transform, false, false);
 		}
 
+		// Remember opening-side transforms so we can UNDO them after CSG. Without the
+		// restoration, Opening::transform() in IFCC later re-applies its own composed
+		// placement chain to an already-world-placed mesh, which double-applies the
+		// transform and pushes the opening 72cm+ away from its wall — breaking the
+		// opening↔wall matching and leaving the window hole unfilled in VICUS.
+		std::vector<std::pair<shared_ptr<ProductShapeData>, carve::math::Matrix>> openingTransformsApplied;
+		openingTransformsApplied.reserve(vec_opening_shapes.size());
+
 		for( auto& product_shape_opening : vec_opening_shapes )
 		{
+			carve::math::Matrix opening_transform_used;
 			if( allOpeningsRelativeToProduct )
 			{
-				carve::math::Matrix opening_transform_relative = product_shape_opening->getRelativeTransform(product_shape);
-				product_shape_opening->applyTransformToProduct(opening_transform_relative, false, false);
+				opening_transform_used = product_shape_opening->getRelativeTransform(product_shape);
+				product_shape_opening->applyTransformToProduct(opening_transform_used, false, false);
 			}
 			else
 			{
-				carve::math::Matrix opening_transform = product_shape_opening->getTransform();
-				product_shape_opening->applyTransformToProduct(opening_transform, false, false);
+				opening_transform_used = product_shape_opening->getTransform();
+				product_shape_opening->applyTransformToProduct(opening_transform_used, false, false);
 			}
+			openingTransformsApplied.emplace_back(product_shape_opening, opening_transform_used);
 
 			for( auto opening_representation_data : product_shape_opening->m_vec_representations )
 			{
@@ -1073,6 +1083,30 @@ RepresentationConverter::RepresentationConverter( shared_ptr<GeometrySettings> g
 					product_shape->applyTransformToProduct(product_matrix_inverse, false, false);
 				}
 			}
+		}
+
+		// Restore opening shapes back to their original (pre-subtractOpenings) coord
+		// system by applying the inverse of whatever transform we applied above. This
+		// leaves each opening's productShape in local coords so that IFCC::Opening::transform
+		// can later apply the composed placement chain exactly once — matching the way
+		// IFCC::BuildingElement::transform handles walls.
+		for( auto& entry : openingTransformsApplied )
+		{
+			shared_ptr<ProductShapeData>& opening_shape = entry.first;
+			const carve::math::Matrix& applied = entry.second;
+			if( GeomUtils::isMatrixIdentity(applied) )
+				continue;
+			carve::math::Matrix applied_inverse;
+			try
+			{
+				GeomUtils::computeInverse(applied, applied_inverse, 0.01 / m_unit_converter->getCustomLengthFactor());
+			}
+			catch (std::exception& e)
+			{
+				messageCallback(e.what(), StatusCallback::MESSAGE_TYPE_ERROR, __FUNC__, ifc_element.get());
+				continue;
+			}
+			opening_shape->applyTransformToProduct(applied_inverse, false, false);
 		}
 		return true;
 	}

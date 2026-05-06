@@ -17,6 +17,8 @@
 
 namespace IFCC {
 
+class Instances;
+
 /*! Class contains all objects for databases and functions for handling.*/
 class Database
 {
@@ -34,6 +36,16 @@ public:
 		Calls collectMaterialsAndConstructions, collectWindowsAndGlazings and collectComponents.
 	*/
 	void collectData(BuildingElementsCollector& elements);
+
+	/*! Deduplicate m_components and m_subSurfaceComponents by their equality operator
+		(same construction + type, resp. same type + window + construction), rewrite
+		every ComponentInstance / SubSurfaceComponentInstance in `instances` to point
+		at the surviving component, and assign a deterministic per-type display color
+		to each survivor. Hue is chosen from the component type; lightness is scattered
+		from the component id via a multiplicative hash so adjacent ids look clearly
+		different, not clustered.
+	*/
+	void unifyComponents(Instances& instances);
 
 	/*! Add all database items to the embedded database of the given vicus project.
 		\param project Vicus project

@@ -181,6 +181,20 @@ public:
 	/*! Set if the building elements will be written as plain geometry into the vicus file.*/
 	void setWritingBuildingElements(bool constructions, bool buildingElements, bool openings, bool other);
 
+	/*! Controls per-category which building elements are additionally exported as
+		VICUS::ShadingObject entries in the resulting VICUS project.
+		\param construction Walls, slabs, roofs
+		\param similar Beams, columns, covering, footing, curtain wall
+		\param opening Windows and doors (high face-count, usually noisy)
+		\param other Everything else (currently not populated by the reader)
+	*/
+	void setWriteShadingObjects(bool construction, bool similar, bool opening, bool other);
+
+	/*! Enable/disable the coplanar-face merge pre-pass for the shading export.
+		Default on — without it, each mesh face of a building element becomes its
+		own shading surface, producing thousands of slivers for real buildings. */
+	void setMergeShadingCoplanarFaces(bool enabled);
+
 	/*! Set the minimum values for basic checks.
 	 *  \param minimumDistance Used as eps for search for equal or coplanar points
 	 *  \param minimumArea Areas smaller than this will not taken into account

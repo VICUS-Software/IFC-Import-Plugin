@@ -47,6 +47,11 @@ public:
 
 	int componentId() const;
 
+	/*! Rewrite the component id (used by Database::unifyComponents after
+		duplicate components are merged to redirect this instance to the survivor).
+	*/
+	void setComponentId(int id);
+
 	int sideBSurfaceId() const;
 
 	/*! Create a VICUS::ComponentInstance from this object.

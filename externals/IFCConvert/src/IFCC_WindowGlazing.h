@@ -28,13 +28,16 @@ public:
 	/*! Write the component in vicus xml format.*/
 	TiXmlElement * writeXML(TiXmlElement * parent) const;
 
-	/*! Comparison operator.*/
+	/*! Comparison operator.
+		Equality is defined by the physical glazing parameters only — thermal
+		transmittance (U-value) and solar-heat-gain coefficient (SHGC). Two
+		glazings that match on those two values are merged into one entry by
+		Database::collectWindowsAndGlazings, regardless of name or notes.
+	*/
 	friend bool operator==(const WindowGlazing& left, const WindowGlazing& right) {
-		if(left.m_name != right.m_name)
-			return false;
-		if(left.m_notes != right.m_notes)
-			return false;
 		if(!IBK::near_equal(left.m_thermalTransmittance, right.m_thermalTransmittance))
+			return false;
+		if(!IBK::near_equal(left.m_shgc, right.m_shgc))
 			return false;
 		return true;
 	}
@@ -51,7 +54,8 @@ public:
 	std::string	m_notes;				///< Some remarks
 	std::string	m_manufacturer;			///< Producer of glazing system
 	std::string	m_dataSource;			///< Source of window data
-	double		m_thermalTransmittance;	///< Thermal transmittance in [W/m2K]
+	double		m_thermalTransmittance;	///< Thermal transmittance U-value in [W/m2K]
+	double		m_shgc;					///< Solar heat gain coefficient (perpendicular / hemispherical) in [---]
 };
 
 

@@ -59,6 +59,10 @@ int ComponentInstance::componentId() const {
 	return m_componentId;
 }
 
+void ComponentInstance::setComponentId(int id) {
+	m_componentId = id;
+}
+
 int ComponentInstance::sideBSurfaceId() const {
 	return m_sideBSurfaceId;
 }

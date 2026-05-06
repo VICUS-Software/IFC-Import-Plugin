@@ -26,6 +26,7 @@ include_directories(
 )
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+find_package(OpenMP REQUIRED)
 
 # collect a list of all source files of the IFCConvert library
 file( GLOB LIB_SRCS
@@ -53,7 +54,7 @@ else()
 	add_library( ${PROJECT_NAME} STATIC ${LIB_SRCS} ${LIB_MOC_SRCS} )
 endif()
 
- target_link_libraries(IFCConvert PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad)
+ target_link_libraries(IFCConvert PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad OpenMP::OpenMP_CXX)
  if(TARGET IFCConvert_static)
-	target_link_libraries(IFCConvert_static PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad)
+	target_link_libraries(IFCConvert_static PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad OpenMP::OpenMP_CXX)
  endif()

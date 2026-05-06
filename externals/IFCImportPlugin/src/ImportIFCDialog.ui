@@ -672,6 +672,16 @@
             </property>
            </widget>
           </item>
+          <item row="1" column="3">
+           <widget class="QCheckBox" name="checkBoxWriteShadingObjects">
+            <property name="toolTip">
+             <string>Also export every building element as a VICUS shading object (m_shadingObjects).</string>
+            </property>
+            <property name="text">
+             <string>As shading objects</string>
+            </property>
+           </widget>
+          </item>
           <item row="2" column="1">
            <spacer name="verticalSpacerOutput">
             <property name="orientation">

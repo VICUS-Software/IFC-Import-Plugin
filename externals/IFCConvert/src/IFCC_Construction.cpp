@@ -1,5 +1,8 @@
 #include "IFCC_Construction.h"
 
+#include <QColor>
+#include <QString>
+
 #include <Carve/src/include/carve/carve.hpp>
 
 #include "IFCC_MeshUtils.h"
@@ -47,6 +50,12 @@ VICUS::Construction Construction::getVicusObject(std::map<int,int>& idMap, int i
 		vlay.m_idMaterial = idMap[layer.first];
 		vlay.m_para[VICUS::MaterialLayer::P_Thickness].set("Thickness", layer.second, "m");
 		vcon.m_materialLayers.push_back(vlay);
+	}
+
+	if(!m_color.empty()) {
+		QColor c(QString::fromStdString(m_color));
+		if(c.isValid())
+			vcon.m_color = c;
 	}
 
 	return vcon;

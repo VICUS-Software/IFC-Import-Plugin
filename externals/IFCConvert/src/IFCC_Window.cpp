@@ -1,5 +1,8 @@
 #include "IFCC_Window.h"
 
+#include <QColor>
+#include <QString>
+
 namespace IFCC {
 
 Window::Window() :
@@ -43,6 +46,12 @@ VICUS::Window Window::getVicusObject(std::map<int,int>& idMap, int idOffset) con
 	vwin.m_notes = QString::fromStdString(m_notes);
 	vwin.m_methodFrame = static_cast<VICUS::Window::Method>(m_methodFrame);
 	vwin.m_methodDivider = static_cast<VICUS::Window::Method>(m_methodDivider);
+
+	if(!m_color.empty()) {
+		QColor c(QString::fromStdString(m_color));
+		if(c.isValid())
+			vwin.m_color = c;
+	}
 
 	return vwin;
 }

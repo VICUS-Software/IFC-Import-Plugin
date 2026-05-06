@@ -27,10 +27,16 @@ cd externals
 
 ```bash
 cd build/cmake
-./build.sh [cores] [debug|release|reldeb] [verbose]
-# Example:
-./build.sh 8 release
+./build.sh [omp] [cores] [debug|release|reldeb] [verbose]
+# Standard build (with OpenMP enabled — required for the parallelized
+# opening-matching and updateSpaces paths):
+./build.sh omp release 16
 ```
+
+The `omp` flag uses a separate build dir (`bb-omp-gcc`) so OpenMP and
+non-OpenMP builds don't collide. OpenMP itself is required by CMake
+unconditionally (`find_package(OpenMP REQUIRED)`); the flag is a marker that
+also keeps the build trees separate.
 
 Output: `bin/release/IFC2BESTest` and `bin/release/libImportIFCPlugin.so`
 

@@ -62,6 +62,23 @@ public:
 		return m_guid;
 	}
 
+	/*! Assign a display color (hex string, e.g. "#7AB3FF"). Used by
+		Database::unifyComponents to color components after deduplication.
+	*/
+	void setColor(const std::string& color) {
+		m_color = color;
+	}
+
+	/*! Current display color (hex string, empty if unset). */
+	const std::string& color() const {
+		return m_color;
+	}
+
+	/*! Return the subsurface component type (window/door/misc). */
+	SubSurfaceComponentType typeValue() const {
+		return m_type;
+	}
+
 	/*! Write the component in vicus xml format.*/
 	TiXmlElement * writeXML(TiXmlElement * parent) const;
 

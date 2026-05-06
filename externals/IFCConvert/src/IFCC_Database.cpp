@@ -1,12 +1,107 @@
 #include "IFCC_Database.h"
 
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
 
 #include <Carve/src/include/carve/carve.hpp>
 
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
+#include "IFCC_Instances.h"
+#include "IFCC_ComponentInstance.h"
+#include "IFCC_Logger.h"
+#include "IFCC_Property.h"
 
 namespace IFCC {
+
+namespace {
+
+// Knuth multiplicative hash → [0,1). Scatters adjacent ids across the lightness
+// range so consecutive components look clearly different, not near-identical.
+double idToUnit(int id) {
+	uint32_t h = static_cast<uint32_t>(id) * 2654435761u;
+	return (h >> 8) / double(0xFFFFFF);
+}
+
+// HSL (h in [0,360], s/l in [0,1]) → "#RRGGBB" hex string.
+std::string hslToHex(double h, double s, double l) {
+	double c = (1.0 - std::fabs(2.0 * l - 1.0)) * s;
+	double hp = h / 60.0;
+	double x = c * (1.0 - std::fabs(std::fmod(hp, 2.0) - 1.0));
+	double r = 0, g = 0, b = 0;
+	if      (hp < 1) { r = c; g = x; b = 0; }
+	else if (hp < 2) { r = x; g = c; b = 0; }
+	else if (hp < 3) { r = 0; g = c; b = x; }
+	else if (hp < 4) { r = 0; g = x; b = c; }
+	else if (hp < 5) { r = x; g = 0; b = c; }
+	else             { r = c; g = 0; b = x; }
+	double m = l - c / 2.0;
+	int ri = static_cast<int>(std::round((r + m) * 255));
+	int gi = static_cast<int>(std::round((g + m) * 255));
+	int bi = static_cast<int>(std::round((b + m) * 255));
+	char buf[10];
+	std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", ri, gi, bi);
+	return std::string(buf);
+}
+
+// Hue per main component type. Chosen so adjacent categories (all walls, all
+// floors, all roofs) stay visually close while distinct categories stand apart.
+double hueForComponent(Component::ComponentType t) {
+	switch(t) {
+		case Component::CT_OutsideWall:         return   0; // red
+		case Component::CT_OutsideWallToGround: return  20; // red-orange
+		case Component::CT_InsideWall:          return 210; // blue
+		case Component::CT_FloorToCellar:       return  40; // orange
+		case Component::CT_FloorToAir:          return  60; // yellow
+		case Component::CT_FloorToGround:       return  30; // brown-orange
+		case Component::CT_Ceiling:             return 260; // violet
+		case Component::CT_SlopedRoof:          return 120; // green
+		case Component::CT_FlatRoof:            return 140; // green-cyan
+		case Component::CT_ColdRoof:            return 180; // cyan
+		case Component::CT_WarmRoof:            return 100; // yellow-green
+		case Component::CT_Miscellaneous:       return 300; // magenta
+		case Component::NUM_CT:                 return 320;
+	}
+	return 320;
+}
+
+// Hue per subsurface type. Kept distinct from main-component hues so windows
+// and doors visually pop against their parent walls.
+double hueForSubSurface(SubSurfaceComponent::SubSurfaceComponentType t) {
+	switch(t) {
+		case SubSurfaceComponent::CT_Window:        return 220; // light blue
+		case SubSurfaceComponent::CT_Door:          return 330; // magenta-pink
+		case SubSurfaceComponent::CT_Miscellaneous: return 280; // purple
+		case SubSurfaceComponent::NUM_CT:           return 290;
+	}
+	return 290;
+}
+
+std::string colorForComponent(int id, Component::ComponentType t) {
+	double h = hueForComponent(t);
+	double l = 0.30 + idToUnit(id) * 0.45; // [0.30, 0.75]
+	return hslToHex(h, 0.65, l);
+}
+
+// Color for a Construction referenced by a given component type. Same hue as the
+// component type so construction tint lines up with component tint; lightness
+// scattered by the construction's own id so multiple constructions sharing a type
+// still look distinct.
+std::string colorForConstruction(int constructionId, Component::ComponentType t) {
+	double h = hueForComponent(t);
+	double l = 0.35 + idToUnit(constructionId) * 0.40;
+	return hslToHex(h, 0.55, l);
+}
+
+std::string colorForSubSurfaceComponent(int id, SubSurfaceComponent::SubSurfaceComponentType t) {
+	double h = hueForSubSurface(t);
+	double l = 0.35 + idToUnit(id) * 0.40; // slightly tighter band for subsurfaces
+	return hslToHex(h, 0.60, l);
+}
+
+} // end anonymous namespace
+
 
 int Database::m_virtualConstructionId = -1;
 int Database::m_missingConstructionId = -1;
@@ -298,6 +393,17 @@ void Database::collectWindowsAndGlazings(std::vector<std::shared_ptr<BuildingEle
 			glazing.m_notes.pop_back();
 		}
 
+		// Pull the two physical parameters that drive WindowGlazing equality.
+		// U-value is already extracted onto the element in setThermalTransmittance();
+		// SHGC (SolarHeatGainTransmittance) still needs to be pulled from the raw
+		// IFC property map. Windows with matching U + SHGC collapse to one glazing.
+		glazing.m_thermalTransmittance = elem->thermalTransmittance();
+		double shgc = 0.0;
+		if(getDoubleProperty(elem->propertyMap(), "Pset_DoorWindowGlazingCommon",
+							 "SolarHeatGainTransmittance", shgc)) {
+			glazing.m_shgc = shgc;
+		}
+
 		auto fitGl = std::find_if(
 					   m_windowGlazings.begin(),
 					   m_windowGlazings.end(),
@@ -326,6 +432,109 @@ void Database::collectWindowsAndGlazings(std::vector<std::shared_ptr<BuildingEle
 			elem->m_openingProperties.m_id = fitWi->first;
 		}
 	}
+}
+
+void Database::unifyComponents(Instances& instances) {
+	// ---- main Component ----
+	std::map<int,int> componentRemap; // old id -> kept id
+	std::vector<int> keptComponentIds;
+	keptComponentIds.reserve(m_components.size());
+
+	for(auto it = m_components.begin(); it != m_components.end(); ) {
+		bool merged = false;
+		for(int keptId : keptComponentIds) {
+			const Component& kept = m_components.at(keptId);
+			if(kept == it->second) {
+				componentRemap[it->first] = keptId;
+				it = m_components.erase(it);
+				merged = true;
+				break;
+			}
+		}
+		if(!merged) {
+			keptComponentIds.push_back(it->first);
+			++it;
+		}
+	}
+
+	// Assign colors to surviving main components.
+	for(auto& kv : m_components) {
+		kv.second.m_color = colorForComponent(kv.second.m_id, kv.second.m_type);
+	}
+
+	// Propagate per-type coloring to the Constructions referenced by each Component
+	// so that VICUS's "Einfärbung: Konstruktionen" view picks up the same palette.
+	// Multiple components may share one construction; prefer a non-Miscellaneous
+	// type when picking the representative hue.
+	std::map<int, Component::ComponentType> constructionRepType;
+	for(const auto& kv : m_components) {
+		int cid = kv.second.m_constructionId;
+		if(cid < 0)
+			continue;
+		auto it = constructionRepType.find(cid);
+		if(it == constructionRepType.end() ||
+		   (it->second == Component::CT_Miscellaneous && kv.second.m_type != Component::CT_Miscellaneous))
+		{
+			constructionRepType[cid] = kv.second.m_type;
+		}
+	}
+	for(auto& kv : m_constructions) {
+		Component::ComponentType t = Component::CT_Miscellaneous;
+		auto it = constructionRepType.find(kv.second.m_id);
+		if(it != constructionRepType.end())
+			t = it->second;
+		kv.second.m_color = colorForConstruction(kv.second.m_id, t);
+	}
+
+	// ---- SubSurfaceComponent ----
+	std::map<int,int> subRemap;
+	std::vector<int> keptSubIds;
+	keptSubIds.reserve(m_subSurfaceComponents.size());
+
+	for(auto it = m_subSurfaceComponents.begin(); it != m_subSurfaceComponents.end(); ) {
+		bool merged = false;
+		for(int keptId : keptSubIds) {
+			const SubSurfaceComponent& kept = m_subSurfaceComponents.at(keptId);
+			if(kept == it->second) {
+				subRemap[it->first] = keptId;
+				it = m_subSurfaceComponents.erase(it);
+				merged = true;
+				break;
+			}
+		}
+		if(!merged) {
+			keptSubIds.push_back(it->first);
+			++it;
+		}
+	}
+
+	for(auto& kv : m_subSurfaceComponents) {
+		kv.second.setColor(colorForSubSurfaceComponent(kv.second.id(), kv.second.typeValue()));
+	}
+
+	// Windows and WindowGlazings are already deduplicated on insertion (see
+	// collectWindowsAndGlazings); here we only assign colors so VICUS's "Einfärbung"
+	// views render distinct colors instead of black. Use the Window-subsurface hue
+	// as the base and scatter lightness by the object's id.
+	{
+		const double winHue = hueForSubSurface(SubSurfaceComponent::CT_Window);
+		for(auto& kv : m_windows) {
+			double l = 0.35 + idToUnit(kv.second.m_id) * 0.40;
+			kv.second.m_color = hslToHex(winHue, 0.60, l);
+		}
+		for(auto& kv : m_windowGlazings) {
+			double l = 0.40 + idToUnit(kv.second.m_id) * 0.35;
+			kv.second.m_color = hslToHex(winHue, 0.55, l);
+		}
+	}
+
+	// Rewrite instance component-ids via the public remap API.
+	instances.remapComponentIds(componentRemap, subRemap);
+
+	Logger::instance() << "unifyComponents: components kept=" << m_components.size()
+					   << " merged=" << componentRemap.size()
+					   << " ; subsurface components kept=" << m_subSurfaceComponents.size()
+					   << " merged=" << subRemap.size();
 }
 
 

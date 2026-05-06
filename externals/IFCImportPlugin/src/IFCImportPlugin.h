@@ -39,6 +39,23 @@ public:
 	/*! Return the name of the used ifc file or an empty string.*/
 	QString IFCFileName() const;
 
+	/*! Headless CLI entry point: read the given IFC file, run the conversion with
+		sensible defaults (space boundaries enabled, shading export for construction +
+		similar + opening), and write the resulting VICUS project to \a vicusPath.
+		Does not show any dialog. Returns true on success. Used by IFC2BESTest CLI
+		mode (see main.cpp) for batch testing over a folder of IFC files.
+		\param ifcPath Input IFC file.
+		\param vicusPath Output VICUS project file (*.vicus).
+		\param useSpaceBoundaries When true, reuse IfcRelSpaceBoundary entities; when
+			false, space boundaries are synthesized via construction matching.
+		\param writeShading When true, enable shading export for construction, similar
+			and opening categories.
+		Q_INVOKABLE so IFC2BESTest's main.cpp can invoke it via QMetaObject without
+		linking against IFCImportPlugin's concrete type.
+	*/
+	Q_INVOKABLE bool runCLI(const QString & ifcPath, const QString & vicusPath,
+							bool useSpaceBoundaries = true, bool writeShading = true);
+
 private:
 	ImportIFCMessageHandler m_msgHandler;	///< Message handler for handling warnings, errors and the log file
 	QString					m_ifcFileName;	///< Name of the ifc file for converting

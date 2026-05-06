@@ -1,5 +1,7 @@
 #include "IFCC_BuildingStorey.h"
 
+#include <omp.h>
+
 #include <ifcpp/IFC4X3/include/IfcRelDefinesByProperties.h>
 #include <ifcpp/IFC4X3/include/IfcRelAggregates.h>
 #include <ifcpp/IFC4X3/include/IfcGloballyUniqueId.h>
@@ -71,16 +73,17 @@ bool BuildingStorey::set(const std::vector<std::shared_ptr<IFC4X3::IfcSpace>>& s
 
 void BuildingStorey::fetchSpaces(const std::map<std::string,shared_ptr<ProductShapeData>>& shapes,
 								 shared_ptr<UnitConverter>& unit_converter, std::vector<ConvertError>& errors) {
-	for(const auto& shape : shapes) {
-		for(const auto& opOrg : m_spacesOriginal) {
-			if(shape.first == guidFromObject(opOrg.get())) {
-				std::shared_ptr<Space> space = std::shared_ptr<Space>(new Space(GUID_maker::instance().guid()));
-				if(space->set(opOrg, errors)) {
-					m_spaces.push_back(space);
-					m_spaces.back()->update(shape.second, errors);
-				}
-				break;
-			}
+	// `shapes` is keyed by GUID, so iterate the (much smaller) m_spacesOriginal
+	// vector and do a single std::map::find() lookup per space — O(N log M)
+	// instead of the previous O(N*M) string-compare nested loop.
+	for(const std::shared_ptr<IFC4X3::IfcSpace> & opOrg : m_spacesOriginal) {
+		auto it = shapes.find(guidFromObject(opOrg.get()));
+		if(it == shapes.end())
+			continue;
+		std::shared_ptr<Space> space = std::shared_ptr<Space>(new Space(GUID_maker::instance().guid()));
+		if(space->set(opOrg, errors)) {
+			m_spaces.push_back(space);
+			m_spaces.back()->update(it->second, errors);
 		}
 	}
 }
@@ -106,13 +109,46 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 	size_t totalSpaces = ifcIndices.size() + constructionIndices.size();
 	size_t completed = 0;
 
-	// IFC path: sequential (already fast, no heavy geometry matching)
-	for(size_t i : ifcIndices) {
-		m_spaces[i]->updateSpaceBoundaries(shapes, unit_converter, buildingElements,
-										   openings, useSpaceBoundaries, errors, convertOptions);
-		++completed;
-		if(notify && totalSpaces > 0)
-			notify->notify(double(completed) / double(totalSpaces));
+	// IFC path: parallel, chunked so notify() and cancellation are checked between chunks.
+	// updateSpaceBoundaries only writes to its own Space and to its per-space error
+	// vector (collected and merged after the chunk). The shared `errors` vector
+	// is not thread-safe for push_back, so per-space buffers are required.
+	// notify() must run on the GUI thread (Qt processEvents) — kept outside the
+	// parallel region.
+	if(!ifcIndices.empty()) {
+		const size_t nIfc = ifcIndices.size();
+		std::vector<std::vector<ConvertError>> perSpaceIfcErrors(nIfc);
+
+		// Pre-warm the BuildingElementsCollector hash-cache before the parallel region
+		// so that worker threads don't all hit the lazy-init mutex on first lookup.
+		(void)buildingElements.fromID(-1);
+
+		const int numProcs = omp_get_num_procs();
+		const int numThreads = (numProcs >= 4) ? (numProcs - 2)
+		                     : (numProcs >= 2) ? (numProcs - 1)
+		                                       : 1;
+
+		const int targetTicks = 20;
+		int chunk = std::max(1, (int)((nIfc + targetTicks - 1) / targetTicks));
+		for(int chunkStart = 0; chunkStart < (int)nIfc; chunkStart += chunk) {
+			if(Cancellation::isCancelled())
+				break;
+			int chunkEnd = std::min(chunkStart + chunk, (int)nIfc);
+			#pragma omp parallel for schedule(dynamic) num_threads(numThreads)
+			for(int k = chunkStart; k < chunkEnd; ++k) {
+				const size_t i = ifcIndices[k];
+				m_spaces[i]->updateSpaceBoundaries(shapes, unit_converter, buildingElements,
+												   openings, useSpaceBoundaries,
+												   perSpaceIfcErrors[k], convertOptions);
+			}
+			completed += (size_t)(chunkEnd - chunkStart);
+			if(notify && totalSpaces > 0)
+				notify->notify(double(completed) / double(totalSpaces));
+		}
+
+		// merge per-space errors back into the caller-provided error list
+		for(std::vector<ConvertError> & es : perSpaceIfcErrors)
+			errors.insert(errors.end(), es.begin(), es.end());
 	}
 
 	// Construction path: parallel Phase 1, sequential Phase 2

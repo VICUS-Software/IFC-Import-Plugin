@@ -1,9 +1,11 @@
 #ifndef IFCC_BuildingElementsCollectorH
 #define IFCC_BuildingElementsCollectorH
 
-#include <vector>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace IFCC {
 
@@ -38,6 +40,7 @@ struct BuildingElementsCollector {
 		m_openingElements.clear();
 		m_otherElements.clear();
 		m_elementsWithoutSurfaces.clear();
+		invalidateLookupCaches();
 	}
 
 	std::vector<std::shared_ptr<BuildingElement>> allConstructionElements() const {
@@ -47,9 +50,37 @@ struct BuildingElementsCollector {
 		return constructionElements;
 	}
 
+	/*! Returns the building element with the given IFC GUID, or nullptr if not found.
+		Backed by a hash-map cache (lazily built on first lookup) so calls are O(1)
+		instead of the original O(N) linear scan over all 5 element vectors.
+	*/
 	const std::shared_ptr<BuildingElement> fromGUID(const std::string& guid) const;
 
+	/*! Returns the building element with the given internal ID, or nullptr if not found.
+		Same lazy hash-map cache as fromGUID().
+	*/
 	std::shared_ptr<BuildingElement> fromID(int id) const;
+
+	/*! Drops the cached GUID/ID lookup maps. Must be called whenever the
+		underlying element vectors are mutated (e.g. push_back). The clear()
+		method invokes this automatically.
+	*/
+	void invalidateLookupCaches() const {
+		std::lock_guard<std::mutex> lock(m_cacheMutex);
+		m_byGUID.clear();
+		m_byID.clear();
+		m_cachesBuilt = false;
+	}
+
+private:
+	/*! Builds the m_byGUID and m_byID maps from the current contents of all
+		element vectors. Caller must hold m_cacheMutex. */
+	void buildLookupCaches() const;
+
+	mutable std::unordered_map<std::string, std::shared_ptr<BuildingElement>>	m_byGUID;
+	mutable std::unordered_map<int, std::shared_ptr<BuildingElement>>			m_byID;
+	mutable bool																m_cachesBuilt = false;
+	mutable std::mutex															m_cacheMutex;
 };
 
 } // namespace IFCC
