@@ -14,6 +14,10 @@ CONFIG += shared
 
 CONFIG += c++17
 
+# Required because we pull in ifcplusplus/glm headers that use stock GLM's guarded
+# gtx extensions (see IFCConvert.pro for details).
+DEFINES += GLM_ENABLE_EXPERIMENTAL
+
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
@@ -37,7 +41,8 @@ INCLUDEPATH = \
 	../ifcplusplus/src/IfcPlusPlus/src/external/Carve/src/include \
 	../ifcplusplus/src/external \
 	../ifcplusplus/src/IfcPlusPlus/src/external \
-	../ifcplusplus/src/IfcPlusPlus/src/external/glm \
+	../glm-compat \
+	../glm/src \
 	../ifcplusplus/src/IfcPlusPlus/src/external/manifold/src/utilities/include \
 	../ifcplusplus/src/IfcPlusPlus/src/external/Carve/src/common \
 	../IFCConvert/src

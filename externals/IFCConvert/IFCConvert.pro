@@ -29,19 +29,32 @@ QT       += core gui widgets
 # like version number etc., we also may reset all
 #
 
+LIBS += -lIBK -lTiCPP -lclipper -lNandrad -lIBKMK -lVicus -lglm -lVicOSM
+
+# ifcplusplus headers include glm the upstream way (<glm/glm.hpp>), which needs a
+# "glm/" prefix directory. Our glm lib keeps its headers flat under glm/src, so the
+# glm-compat symlink (glm-compat/glm -> ../glm/src) bridges the two layouts.
+# GLM_ENABLE_EXPERIMENTAL is required because stock GLM guards its gtx extensions
+# (e.g. gtx/rotate_vector.hpp, used by ifcpp GeomUtils.h); the bundled glm had this
+# patched into its headers.
+DEFINES += GLM_ENABLE_EXPERIMENTAL
+
 INCLUDEPATH += \
 		src \
 		../ifcplusplus/src/IfcPlusPlus/src \
 		../ifcplusplus/src/IfcPlusPlus/src/ifcpp/IFC4X3/include \
 		../ifcplusplus/src/IfcPlusPlus/src/ifcpp/reader \
 		../clipper/src \
+		../Nandrad/src \
 		../IBK/src \
 		../IBKMK/src \
 		../TiCPP/src \
 		../Vicus/src \
+		../VicOSM/src \
+		../glm-compat \
+		../glm/src \
 		../ifcplusplus/src/IfcPlusPlus/src/external/Carve/src/include \
 		../ifcplusplus/src/IfcPlusPlus/src/external \
-		../ifcplusplus/src/IfcPlusPlus/src/external/glm \
 		../ifcplusplus/src/IfcPlusPlus/src/external/manifold/src/utilities/include \
 		../ifcplusplus/src/IfcPlusPlus/src/external/Carve/src/common
 

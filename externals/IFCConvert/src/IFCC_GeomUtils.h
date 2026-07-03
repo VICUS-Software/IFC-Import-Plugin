@@ -22,15 +22,23 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OU
 
 #include <ifcpp/model/BasicTypes.h>
 #include <ifcpp/model/BuildingException.h>
-#include <glm/glm.hpp>
-#include <glm/gtx/closest_point.hpp>
-#include <glm/gtx/intersect.hpp>
-#include <glm/gtx/matrix_decompose.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtx/normal.hpp>
-#include <glm/gtx/rotate_vector.hpp>
-#include <glm/gtx/string_cast.hpp>
-#include <glm/gtx/vector_angle.hpp>
+
+// Stock GLM guards its gtx extensions behind GLM_ENABLE_EXPERIMENTAL and #errors
+// out otherwise. The previously bundled ifcpp glm had this patched into its headers;
+// our glm lib does not, so we must enable it before including any gtx/gtc header.
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
+
+#include <glm.hpp>
+#include <gtx/closest_point.hpp>
+#include <gtx/intersect.hpp>
+#include <gtx/matrix_decompose.hpp>
+#include <gtc/matrix_transform.hpp>
+#include <gtx/normal.hpp>
+#include <gtx/rotate_vector.hpp>
+#include <gtx/string_cast.hpp>
+#include <gtx/vector_angle.hpp>
 
 #include <ifcpp/geometry/IncludeCarveHeaders.h>
 
