@@ -266,6 +266,19 @@ public:
 										   const BuildingElementsCollector& buildingElements,
 										   const ConvertOptions& convertOptions);
 
+	/*! Attach an opening WITHOUT any space boundary as a zero-depth flap on the
+		'Missing' fill its outline borders on. Empty openings (IfcOpeningElement
+		without window/door fill — duct/stair openings) are carved OUT of the
+		space shell, so no surface exists at the hole position and regular
+		matching finds nothing: the fill covering the rest of the ceiling/wall
+		plane merely touches the hole rim. Requires the opening body to lie flat
+		in the fill plane and its outline to border the fill (rim overlap).
+		\return true if a flap with the opening hole was attached.
+	*/
+	bool attachOrphanOpeningFlap(Opening& opening,
+								 const BuildingElementsCollector& buildingElements,
+								 const ConvertOptions& convertOptions);
+
 	/*! If space boundaries with the same surface exist one of whem will be removed.
 	*/
 	void removeDublicatedSpaceBoundaries(const ConvertOptions& convertOptions);

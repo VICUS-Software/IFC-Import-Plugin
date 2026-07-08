@@ -2032,6 +2032,186 @@ bool Space::expandMissingHostToOpeningOutline(Opening& opening,
 	return true;
 }
 
+bool Space::attachOrphanOpeningFlap(Opening& opening,
+									const BuildingElementsCollector& buildingElements,
+									const ConvertOptions& convertOptions) {
+	if(opening.hasSpaceBoundary())
+		return false;
+	const std::vector<Surface>& bodySurfs = !opening.surfaces().empty() ? opening.surfaces()
+																		: opening.surfacesCSGElement();
+	if(bodySurfs.empty())
+		return false;
+
+	std::shared_ptr<BuildingElement> elem;
+	for(int id : opening.openingElementIds()) {
+		auto cand = buildingElements.fromID(id);
+		if(cand && isOpeningType(cand->type())) {
+			elem = cand;
+			break;
+		}
+		if(cand && !elem)
+			elem = cand;
+	}
+	double elemArea = elem ? elem->openingArea() : 0.0;
+
+	const double kMaxPlaneDist  = 0.10;	// [m] hole outline must lie in the fill plane
+	const double kMaxBodyDepth  = 0.80;	// [m] body must be flat against the plane
+	const double kHoleMargin    = 0.05;	// [m] hole stays strictly inside the flap
+
+	// Find the Missing fill whose plane carries the opening outline and whose rim
+	// the (slightly grown) outline overlaps — the fill the hole was carved out of.
+	std::shared_ptr<SpaceBoundary> bestFill;
+	double bestRim = 0.0;
+	for(const auto& sb : m_spaceBoundaries) {
+		if(!sb->isMissing())
+			continue;
+		const Surface& fill = sb->surface();
+		if(!fill.isValid(convertOptions.m_distanceEps) || fill.area() < 0.05)
+			continue;
+		PlaneNormal plane(fill.polygon());
+		if(!plane.m_valid)
+			continue;
+		IBKMK::Vector3D n = newellNormal(fill.polygon());
+		double nl = n.magnitude();
+		if(nl < 1e-9)
+			continue;
+		n *= 1.0/nl;
+		const IBKMK::Vector3D& p0 = fill.centroid();
+		double minAbsD = 1e20, maxAbsD = 0.0;
+		std::vector<IBKMK::Vector2D> pts2;
+		for(const Surface& os : bodySurfs) {
+			for(const IBKMK::Vector3D& v : os.polygon()) {
+				double d = std::fabs(n.scalarProduct(v - p0));
+				minAbsD = std::min(minAbsD, d);
+				maxAbsD = std::max(maxAbsD, d);
+				pts2.push_back(plane.convert3DPoint(v));
+			}
+		}
+		if(pts2.size() < 3 || minAbsD > kMaxPlaneDist || maxAbsD - minAbsD > kMaxBodyDepth)
+			continue;
+		std::vector<IBKMK::Vector2D> hull2 = convexHull2D(pts2);
+		if(hull2.size() < 3)
+			continue;
+		polygon3D_t hull3;
+		for(const IBKMK::Vector2D& p : hull2)
+			hull3.push_back(plane.convert3DPointInv(p));
+		Surface hullSurf(hull3);
+		double hullArea = hullSurf.area();
+		if(hullArea < 0.05 || hullArea > 20.0)
+			continue;
+		if(elemArea > 0.1 && hullArea > 1.05 * elemArea)
+			continue;
+		// Carved-out hole: the outline itself is mostly OUTSIDE the fill — a hole
+		// substantially covered by the fill is a job for the regular matching.
+		Surface inner = fill.intersect(hullSurf);
+		double innerArea = inner.isValid(convertOptions.m_distanceEps) ? inner.area() : 0.0;
+		if(innerArea > 0.3 * hullArea)
+			continue;
+		// Rim contact: the grown outline must overlap the fill boundary.
+		IBKMK::Vector2D hc(0.0, 0.0);
+		for(const IBKMK::Vector2D& p : hull2) { hc.m_x += p.m_x; hc.m_y += p.m_y; }
+		hc.m_x /= double(hull2.size());
+		hc.m_y /= double(hull2.size());
+		polygon3D_t grown3;
+		for(const IBKMK::Vector2D& p : hull2) {
+			IBKMK::Vector2D d(p.m_x - hc.m_x, p.m_y - hc.m_y);
+			double len = std::sqrt(d.m_x*d.m_x + d.m_y*d.m_y);
+			double f = len > 1e-9 ? (len + kHoleMargin) / len : 1.0;
+			grown3.push_back(plane.convert3DPointInv(IBKMK::Vector2D(hc.m_x + d.m_x*f, hc.m_y + d.m_y*f)));
+		}
+		Surface rim = fill.intersect(Surface(grown3));
+		double rimArea = rim.isValid(convertOptions.m_distanceEps) ? rim.area() : 0.0;
+		if(rimArea < 0.001)
+			continue;
+		if(rimArea > bestRim) {
+			bestRim = rimArea;
+			bestFill = sb;
+		}
+	}
+	if(!bestFill)
+		return false;
+
+	// Recompute outline in the winning fill's plane and attach the flap.
+	const Surface& fill = bestFill->surface();
+	PlaneNormal plane(fill.polygon());
+	IBKMK::Vector3D hostN = newellNormal(fill.polygon());
+	hostN *= 1.0/hostN.magnitude();
+	std::vector<IBKMK::Vector2D> pts2;
+	for(const Surface& os : bodySurfs)
+		for(const IBKMK::Vector3D& v : os.polygon())
+			pts2.push_back(plane.convert3DPoint(v));
+	std::vector<IBKMK::Vector2D> hull2 = convexHull2D(pts2);
+	IBKMK::Vector2D hc(0.0, 0.0);
+	for(const IBKMK::Vector2D& p : hull2) { hc.m_x += p.m_x; hc.m_y += p.m_y; }
+	hc.m_x /= double(hull2.size());
+	hc.m_y /= double(hull2.size());
+	auto scaledHull = [&hull2, &hc, &plane](double offset) -> Surface {
+		polygon3D_t poly;
+		for(const IBKMK::Vector2D& p : hull2) {
+			IBKMK::Vector2D d(p.m_x - hc.m_x, p.m_y - hc.m_y);
+			double len = std::sqrt(d.m_x*d.m_x + d.m_y*d.m_y);
+			double f = (len > 1e-9 && len + offset > 1e-9) ? (len + offset) / len : 1.0;
+			poly.push_back(plane.convert3DPointInv(IBKMK::Vector2D(hc.m_x + d.m_x*f, hc.m_y + d.m_y*f)));
+		}
+		return Surface(poly);
+	};
+	Surface hullSurf = scaledHull(0.0);
+	if(!hullSurf.isValid(convertOptions.m_distanceEps))
+		return false;
+
+	// Duplicate openings authored on top of each other (AS7 stacks three
+	// identical duct openings) must not each get their own plate — stacked
+	// plates break the edge pairing and re-open the room. If an existing
+	// opening plate already covers this region, treat this orphan as handled.
+	for(const auto& sb : m_spaceBoundaries) {
+		if(sb->m_openingId < 0 || !sb->isVirtual())
+			continue;
+		const Surface& other = sb->surface();
+		if(!other.isValid(convertOptions.m_distanceEps))
+			continue;
+		IBKMK::Vector3D no = newellNormal(other.polygon());
+		double nol = no.magnitude();
+		if(nol < 1e-9)
+			continue;
+		no *= 1.0/nol;
+		if(std::fabs(no.scalarProduct(hostN)) < 0.99)
+			continue;
+		if(std::fabs(hostN.scalarProduct(other.centroid() - fill.centroid())) > 0.10)
+			continue;
+		Surface inter = other.intersect(hullSurf);
+		if(inter.isValid(convertOptions.m_distanceEps) && inter.area() > 0.5 * hullSurf.area()) {
+			Logger::instance() << "space-openings: ORPHAN-FLAP skip duplicate opening id=" << opening.m_id
+							   << " name='" << opening.m_name << "' covered by sb='" << sb->m_name << "'";
+			return true;
+		}
+	}
+
+	// Full VIRTUAL plate closing the carved hole (an empty opening IS an air
+	// connection) plus the inversely wound back plate. No subsurface ring — a
+	// few-cm frame around the hole fails the surface validation at write time,
+	// and the surviving back plate alone re-opened the room.
+	const IBKMK::Vector3D backN(-hostN.m_x, -hostN.m_y, -hostN.m_z);
+	std::shared_ptr<SpaceBoundary> front(new SpaceBoundary(GUID_maker::instance().guid()));
+	std::string vname = (m_longName.empty() ? m_name : m_longName) + ":" + opening.m_name + " - virtual opening";
+	front->setForVirtualElement(vname, *this, false);
+	front->m_openingId = opening.m_id;
+	if(!front->fetchGeometryFromBuildingElement(alignedWinding(hullSurf, hostN), convertOptions))
+		return false;
+	std::shared_ptr<SpaceBoundary> backSB(new SpaceBoundary(GUID_maker::instance().guid()));
+	backSB->setForMissingElement("MissingBack", *this, false);
+	if(!backSB->fetchGeometryFromBuildingElement(alignedWinding(hullSurf, backN), convertOptions))
+		return false;
+	m_spaceBoundaries.push_back(front);
+	m_spaceBoundaries.push_back(backSB);
+	opening.addSpaceBoundary(front);
+
+	Logger::instance() << "space-openings: ORPHAN-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+					   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
+					   << " fill='" << bestFill->m_name << "' rim=" << bestRim
+					   << " area=" << hullSurf.area();
+	return true;
+}
+
 std::vector<Surface> Space::surfacesOrg() const {
 	return m_surfacesOrg;
 }

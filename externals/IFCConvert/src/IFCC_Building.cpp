@@ -535,6 +535,31 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		Logger::instance() << "Building::updateStoreys: expanded " << expandedFills
 						   << " Missing-fill hosts to full opening outlines";
 
+	// Orphan rescue: openings without ANY space boundary whose hole is carved out
+	// of the space shell (empty IfcOpeningElement duct/stair openings) — no
+	// surface exists at the hole position, so all matching passes come up empty.
+	// Attach them as zero-depth flaps on the Missing fill they border.
+	size_t orphanFlaps = 0;
+	for(Opening& op : openings) {
+		if(op.hasSpaceBoundary())
+			continue;
+		for(const auto& storey : m_storeys) {
+			bool done = false;
+			for(const auto& space : storey->spaces()) {
+				if(space->attachOrphanOpeningFlap(op, buildingElements, convertOptions)) {
+					++orphanFlaps;
+					done = true;
+					break;
+				}
+			}
+			if(done)
+				break;
+		}
+	}
+	if(orphanFlaps > 0)
+		Logger::instance() << "Building::updateStoreys: attached " << orphanFlaps
+						   << " orphan openings as Missing-fill flaps";
+
 	// Optional full map opening guid -> id/state for tracing specific windows
 	// reported from the GUI (env IFCC_LOG_OPENING_MAP=1).
 	if(std::getenv("IFCC_LOG_OPENING_MAP") != nullptr) {
