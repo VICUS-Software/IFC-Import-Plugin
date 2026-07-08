@@ -68,8 +68,15 @@ public:
 	*/
 	void flip(bool positive);
 
-	/*! Return true if the subsurface don't have a corresponding opening element.*/
-	bool isHole() const { return m_elementEntityId < 0; }
+	/*! Return true if the subsurface don't have a corresponding opening element.
+		Virtual connections (empty IfcOpeningElement passage/duct openings matched
+		as 'breakout') are NOT holes: exported as VICUS::Hole they leave uncovered
+		shell edges and flag every room they touch as open — they are air
+		connections and are exported as SubSurfaces instead. */
+	bool isHole() const { return m_elementEntityId < 0 && !m_virtualConnection; }
+
+	/*! Mark this subsurface as a virtual air connection (see isHole()). */
+	void setVirtualConnection(bool vc) { m_virtualConnection = vc; }
 
 	/*! Write the subsurface in vicus xml format.*/
 	TiXmlElement * writeXML(TiXmlElement * parent, bool isHole) const;
@@ -79,6 +86,7 @@ private:
 	int										m_elementEntityId;	///< Id of the corresponding building element (opening)
 	std::string								m_name;				///< Name of the subsurface
 	bool									m_valid;			///< Validity of the object. Is set in constructor.
+	bool									m_virtualConnection = false;	///< Virtual air connection (empty opening), never a hole
 	std::vector<IBKMK::Vector2D>			m_polyVect;			///< 2D polygon of the subsurface
 	PlaneNormal								m_planeNormal;		///< Plane in whose the polygone must lie
 };

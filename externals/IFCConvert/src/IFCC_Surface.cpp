@@ -498,7 +498,7 @@ bool Surface::mergeOnlyThanPlanar(const Surface& surface, double eps) {
 	return true;
 }
 
-bool Surface::addSubSurface(const Surface& subsurface) {
+bool Surface::addSubSurface(const Surface& subsurface, bool virtualConnection) {
 	// Clip the candidate subsurface polygon against this parent surface in the
 	// parent's plane. IFC opening polygons commonly span beyond the wall
 	// fragment they're attached to (interior doors that span two adjacent walls,
@@ -517,6 +517,7 @@ bool Surface::addSubSurface(const Surface& subsurface) {
 		return false;
 
 	sub.set(subsurface.id(), subsurface.m_name, subsurface.m_elementEntityId);
+	sub.setVirtualConnection(virtualConnection);
 
 	std::vector<SubSurface>& target = sub.isHole() ? m_holes : m_subSurfaces;
 

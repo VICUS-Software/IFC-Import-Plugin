@@ -132,9 +132,11 @@ public:
 		There are two kinds of subsurfaces, normal ones and holes. A normal subsurface has a corrsponding opening element.
 		This function add the subsurface to the correct list depending on elementId of the subsurface.
 		\param subsurface Surface which should be a subsurface of the current one
+		\param virtualConnection Mark the subsurface as virtual air connection —
+			   it is then exported as SubSurface, never as an (open) Hole.
 		\return If false the resulting subsurface is not valid and nothing will be added
 	*/
-	bool addSubSurface(const Surface& subsurface);
+	bool addSubSurface(const Surface& subsurface, bool virtualConnection = false);
 
 	/*! Check if current and given polygon contains similar points. If found it collects the indices of these points and return this vector.
 		The function checks all points independent of the order.

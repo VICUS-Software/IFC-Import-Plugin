@@ -392,7 +392,10 @@ const std::vector<std::shared_ptr<SpaceBoundary> >& SpaceBoundary::containedOpen
 Surface SpaceBoundary::surfaceWithSubsurfaces() const {
 	Surface ts = m_surface;
 	for(const auto& sub : m_containedOpeningSpaceBoundaries) {
-		if(!ts.addSubSurface(sub->surface())) {
+		// Virtual breakouts assigned to an IfcOpeningElement are air connections,
+		// not open holes — exported as SubSurface so the shell stays closed.
+		const bool virtualConnection = sub->isVirtual() && sub->m_openingId >= 0;
+		if(!ts.addSubSurface(sub->surface(), virtualConnection)) {
 			// The opening polygon doesn't fit on this parent (clip empty or subsurface
 			// invalid) — the window/door silently disappears from the output otherwise.
 			Logger::instance() << "surfaceWithSubsurfaces: DROPPED opening sb id=" << sub->m_id
