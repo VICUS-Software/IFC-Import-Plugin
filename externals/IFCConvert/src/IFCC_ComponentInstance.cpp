@@ -85,11 +85,11 @@ VICUS::SubSurfaceComponentInstance ComponentInstance::getVicusSubSurfaceComponen
 	vsci.m_id = m_id;
 	auto fit = idMap.find(m_componentId);
 	if(fit != idMap.end())
-		vsci.m_idSubSurfaceComponent = fit->second;
+		vsci.m_idConstruction = fit->second;
 	if(m_sideASurfaceId >= 0)
-		vsci.m_idSideASurface = m_sideASurfaceId;
+		vsci.m_sideA.m_idSurface = m_sideASurfaceId;
 	if(m_sideBSurfaceId >= 0)
-		vsci.m_idSideBSurface = m_sideBSurfaceId;
+		vsci.m_sideB.m_idSurface = m_sideBSurfaceId;
 	return vsci;
 }
 

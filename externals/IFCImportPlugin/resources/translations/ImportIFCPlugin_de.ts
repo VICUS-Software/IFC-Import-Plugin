@@ -4,305 +4,880 @@
 <context>
     <name>IFCImportPlugin</name>
     <message>
-        <location filename="../../src/IFCImportPlugin.cpp" line="37"/>
-        <location filename="../../src/IFCImportPlugin.cpp" line="41"/>
+        <location filename="../../src/IFCImportPlugin.cpp" line="30"/>
+        <source>Open ifc file</source>
+        <translation>IFC-Datei öffnen</translation>
+    </message>
+    <message>
+        <location filename="../../src/IFCImportPlugin.cpp" line="30"/>
+        <source>ifc STEP file (*.ifc)</source>
+        <translation>IFC STEP Datei (*.ifc)</translation>
+    </message>
+    <message>
+        <location filename="../../src/IFCImportPlugin.cpp" line="48"/>
         <source>Import IFC file</source>
         <translation>Importiere IFC Datei</translation>
+    </message>
+    <message>
+        <location filename="../../src/IFCImportPlugin.cpp" line="52"/>
+        <source>IFC file ...</source>
+        <translation>IFC-Datei ...</translation>
+    </message>
+</context>
+<context>
+    <name>ImportIFCDialog</name>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="14"/>
+        <source>IFC Import</source>
+        <translation>IFC-Import</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="22"/>
+        <source>IFC File Name:</source>
+        <translation>IFC-Dateiname:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="32"/>
+        <source>...</source>
+        <translation>...</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="68"/>
+        <source>Conversion Scenario</source>
+        <translation>Konvertierungsszenario</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="85"/>
+        <source>Use IFC Space Boundaries</source>
+        <translation>IFC Space Boundaries verwenden</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="92"/>
+        <source>Full matching</source>
+        <translation>Volle Suche nach Konstruktionen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="104"/>
+        <source>Medium matching (Recommended)</source>
+        <translation>Mittlere Konstruktionssuche (empfohlen)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="114"/>
+        <location filename="../../src/ImportIFCDialog.ui" line="464"/>
+        <source>No matching</source>
+        <translation>Keine Konstruktionszuordnung (nur Zonenflächen)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="148"/>
+        <source>Convert</source>
+        <translation>Konvertieren</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="168"/>
+        <source>Show details</source>
+        <translation>Details anzeigen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="181"/>
+        <source>General</source>
+        <translation>Allgemein</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="192"/>
+        <source>Minimum Values</source>
+        <translation>Minimalwerte</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="211"/>
+        <source>Minimum Distance:</source>
+        <translation>Mindestabstand:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="225"/>
+        <location filename="../../src/ImportIFCDialog.ui" line="283"/>
+        <source>mm</source>
+        <translation>mm</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="248"/>
+        <source>Minimum Area:</source>
+        <translation>Mindestfläche:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="262"/>
+        <source>cm2</source>
+        <translation>cm²</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="269"/>
+        <source>Epsilon for Polygon Operations:</source>
+        <translation>Epsilon für Polygonoperationen:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="310"/>
+        <source>Repair Flags</source>
+        <translation>Reparatur-Flags</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="329"/>
+        <source>If checked all errors will be ignored and the finish button will be enabled</source>
+        <translation>Wenn aktiviert, werden alle Fehler ignoriert und die Beenden-Schaltfläche wird aktiviert</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="332"/>
+        <source>Ignore convert errors</source>
+        <translation>Konvertierungsfehler ignorieren</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="342"/>
+        <source>Remove doubled space boundaries</source>
+        <translation>Doppelte Space Boundaries entfernen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="369"/>
+        <source>Details</source>
+        <translation>Details</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="388"/>
+        <source>More space intersection details</source>
+        <translation>Mehr Informationen zu verschnittenen Räumen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="424"/>
+        <source>Construction Matching</source>
+        <translation>Konstruktionszuordnung</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="430"/>
+        <source>Construction Matching Type:</source>
+        <translation>Art der Konstruktionszuordnung:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="437"/>
+        <source>Full</source>
+        <translation>Voll</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="447"/>
+        <source>Highest priority</source>
+        <translation>Höchste Priorität</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="457"/>
+        <source>N constructions</source>
+        <translation>N Konstruktionen (aus Prioritätsliste)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="486"/>
+        <source>First N Construction Matching:</source>
+        <translation>Anzahl N für Konstruktionszuordnung:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="502"/>
+        <source>Construction types used for creating space boundaries</source>
+        <translation>Konstruktionstypen, die für das Erzeugen von Space Boundaries verwendet werden</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="512"/>
+        <source>Standard Wall Thickness in m:</source>
+        <translation>Standard-Wandstärke in m:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="535"/>
+        <source>Will be used in case no construction exist.</source>
+        <translation>Wird verwendet, wenn keine Konstruktion vorhanden ist.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="542"/>
+        <source>Construction Match Factor:</source>
+        <translation>Konstruktionszuordnungs-Faktor:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="559"/>
+        <source>Factor will be multiplied with wall thickness in order to get search distance</source>
+        <translation>Faktor wird mit der Wandstärke multipliziert, um den Suchabstand zu erhalten</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="567"/>
+        <source>Opening Matching</source>
+        <translation>Öffnungszuordnung</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="573"/>
+        <source>Opening Search Distance:</source>
+        <translation>Öffnungs-Suchabstand:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="583"/>
+        <source>m</source>
+        <translation>m</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="603"/>
+        <source>CSG search</source>
+        <translation>CSG-Suche</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="613"/>
+        <source>Construction types for opening search</source>
+        <translation>Konstruktionstypen für die Öffnungssuche</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="624"/>
+        <source>Construction Output</source>
+        <translation>Konstruktions-Ausgabe</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="630"/>
+        <source>All others</source>
+        <translation>Alle anderen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="637"/>
+        <source>Constructions</source>
+        <translation>Konstruktionen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="644"/>
+        <source>Building elements</source>
+        <translation>Bauteile</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="651"/>
+        <source>Openings</source>
+        <translation>Öffnungen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="671"/>
+        <source>Write surface polygons in old style</source>
+        <translation>Flächenpolygone im alten Stil schreiben</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="678"/>
+        <source>Also export every building element as a VICUS shading object (m_shadingObjects).</source>
+        <translation>Jedes Bauteil zusätzlich als VICUS-Verschattungsobjekt (m_shadingObjects) exportieren.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.ui" line="681"/>
+        <source>As shading objects</source>
+        <translation>Als Verschattungsobjekte</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="70"/>
+        <source>Import</source>
+        <translation>Importieren</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="82"/>
+        <source>IFC Reader...</source>
+        <translation>IFC-Reader...</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="82"/>
+        <source>Abort</source>
+        <translation>Abbrechen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="96"/>
+        <source>Open ifc file</source>
+        <translation>IFC-Datei öffnen</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="96"/>
+        <source>ifc STEP file (*.ifc)</source>
+        <translation>IFC STEP Datei (*.ifc)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="102"/>
+        <source>No filename.</source>
+        <translation>Kein Dateiname.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="110"/>
+        <source>Filename is valid. Start reading.</source>
+        <translation>Dateiname ist gültig. Starte das Lesen.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="116"/>
+        <source>Reading successful</source>
+        <translation>Lesen erfolgreich</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="120"/>
+        <source>This is not a valid filename.</source>
+        <translation>Kein gültiger Dateiname.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="125"/>
+        <source>Converting ...</source>
+        <translation>Konvertieren ...</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="190"/>
+        <source>No IFC file.</source>
+        <translation>Keine IFC-Datei.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="195"/>
+        <source>Reading ...</source>
+        <translation>Lesen ...</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="212"/>
+        <source>File read successfully with %1 IFC entities.</source>
+        <translation>Datei erfolgreich eingelesen mit %1 IFC-Objekten.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="213"/>
+        <source>Project contains %1 buildings and %2 spaces.</source>
+        <translation>Das Projekt enthält %1 Gebäude und %2 Zonen.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="220"/>
+        <source>&lt;font color=&quot;#FF0000&quot;&gt;Fatal error&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Schwerer Fehler&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="221"/>
+        <source>Missing objects</source>
+        <translation>Fehlende Objekte</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="229"/>
+        <source>&lt;font color=&quot;#FF0000&quot;&gt;Read Errors:&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Lesefehler:&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="231"/>
+        <source>Read Errors:</source>
+        <translation>Lesefehler:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="235"/>
+        <source>Read Warnings:</source>
+        <translation>Warnungen beim Lesen:</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="299"/>
+        <source>&lt;font color=&quot;#CC7700&quot;&gt;Conversion warnings:&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#CC7700&quot;&gt;Konvertierungswarnungen:&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="301"/>
+        <source>&lt;font color=&quot;#FF0000&quot;&gt;Conversion errors:&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Konvertierungsfehler:&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="303"/>
+        <source>%1 for object &apos;%2&apos; with id: %3</source>
+        <translation>%1 für Objekt '%2' mit ID: %3</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="310"/>
+        <source>Converting was successful.</source>
+        <translation>Konvertierung war erfolgreich.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="312"/>
+        <source>&lt;font color=&quot;#CC7700&quot;&gt;Warnings while converting:&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#CC7700&quot;&gt;Warnungen beim Konvertieren:&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="318"/>
+        <source>File converted successfully.</source>
+        <translation>Datei erfolgreich konvertiert.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="323"/>
+        <source>&lt;font color=&quot;#CC7700&quot;&gt;Warnings while converting IFC file:&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#CC7700&quot;&gt;Warnungen beim Konvertieren der IFC-Datei:&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="325"/>
+        <source>&lt;font color=&quot;#FF0000&quot;&gt;Error while converting IFC file.&lt;/font&gt;</source>
+        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Fehler beim Konvertieren der IFC-Datei.&lt;/font&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="327"/>
+        <source>%1 spaces intersections found.</source>
+        <translation>%1 verschnittene Räume gefunden.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="329"/>
+        <source>Space intersections.&lt;br&gt;</source>
+        <translation>Verschnittene Räume.&lt;br&gt;</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="333"/>
+        <source>&apos;%1&apos; with &apos;%2&apos;.</source>
+        <translation>'%1' mit '%2'.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="338"/>
+        <source>Space %1 with %2 spaces intersected.</source>
+        <translation>Raum %1 ist mit %2 anderen Räumen verschnitten.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="343"/>
+        <source>%1 spaces with shared space boundaries found.</source>
+        <translation>%1 Zonen mit gleichen Space Boundaries gefunden.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="345"/>
+        <source>Space %1 shares with %2 spaces at least one space boundary.</source>
+        <translation>Zone %1 teilt sich mit Zone %2 mindestens eine Space Boundary.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="349"/>
+        <source>%1 space boundaries with identical surfaces found.</source>
+        <translation>%1 Space Boundaries mit gleichen Flächen gefunden.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="352"/>
+        <source>%1 opening space boundaries found which are used more than once in one space.</source>
+        <translation>%1 Space Boundaries für Öffnungen gefunden, welche mehr als einmal in einem Raum verwendet wurden.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="355"/>
+        <source>%1 component instances found which have non valid surface ids.</source>
+        <translation>%1 Komponenten gefunden, welche ungültige Flächen-IDs haben.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="358"/>
+        <source>%1 openings don&apos;t have a connection to a space boundary.</source>
+        <translation>%1 Öffnungen haben keine Verbindung zu einer Space Boundary.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="444"/>
+        <source>Use space boundaries from the IFC file directly. No construction matching needed.</source>
+        <translation>Space Boundaries direkt aus der IFC-Datei verwenden. Keine Konstruktionszuordnung erforderlich.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="454"/>
+        <source>Check every construction element for matches with space surfaces. Most thorough but slowest.</source>
+        <translation>Jedes Konstruktionselement auf Übereinstimmung mit Raumflächen prüfen. Gründlichste, aber langsamste Methode.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="463"/>
+        <source>Check only the highest-priority construction for each space surface. Good balance of speed and quality.</source>
+        <translation>Nur die Konstruktion mit der höchsten Priorität für jede Raumfläche prüfen. Guter Kompromiss zwischen Geschwindigkeit und Qualität.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="472"/>
+        <source>Create space boundaries without construction matching. No windows or doors. Fastest.</source>
+        <translation>Space Boundaries ohne Konstruktionszuordnung erzeugen. Keine Fenster oder Türen. Schnellste Methode.</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="482"/>
+        <source>Beam</source>
+        <translation>Balken (IFCBeam)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="483"/>
+        <source>Chimney</source>
+        <translation>Schornstein (IFCChimney)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="484"/>
+        <source>Column</source>
+        <translation>Stütze (IFCColumn)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="485"/>
+        <source>Covering</source>
+        <translation>Abdeckung (IFCCovering)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="486"/>
+        <source>Curtain Wall</source>
+        <translation>Vorhangfassade (IFCCurtainWall)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="487"/>
+        <source>Door</source>
+        <translation>Tür (IFCDoor)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="488"/>
+        <source>Footing</source>
+        <translation>Fußbodenaufbau (IFCFooting)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="489"/>
+        <source>Member</source>
+        <translation>Träger (IFCMember)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="490"/>
+        <source>Pile</source>
+        <translation>Pfahl (IFCPile)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="491"/>
+        <source>Plate</source>
+        <translation>Platte (IFCPlate)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="492"/>
+        <source>Railing</source>
+        <translation>Geländer (IFCRailing)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="493"/>
+        <source>Ramp</source>
+        <translation>Rampe (IFCRamp)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="494"/>
+        <source>RampFlight</source>
+        <translation>Rampenlauf (IFCRampFlight)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="495"/>
+        <source>Roof</source>
+        <translation>Dach (IFCRoof)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="496"/>
+        <source>Shading Device</source>
+        <translation>Verschattungselement (IFCShadingDevice)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="497"/>
+        <source>Slab</source>
+        <translation>Decke oder Fußboden (IFCSlab)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="498"/>
+        <source>Stair</source>
+        <translation>Treppe (IFCStair)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="499"/>
+        <source>Stair Flight</source>
+        <translation>Treppenlauf (IFCStairFlight)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="500"/>
+        <source>Wall</source>
+        <translation>Wand (IFCWall)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="501"/>
+        <source>Window</source>
+        <translation>Fenster (IFCWindow)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="502"/>
+        <source>Civil Element</source>
+        <translation>Tiefbauelement (IFCCivilElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="503"/>
+        <source>Distribution Element</source>
+        <translation>Verteilungselement (IFCDistributionElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="504"/>
+        <source>Element Assembly</source>
+        <translation>Bauteilbaugruppe (IFCElementAssembly)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="505"/>
+        <source>Element Component</source>
+        <translation>Bauteilkomponente (IFCElementComponent)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="506"/>
+        <source>Feature Element</source>
+        <translation>Aussparungselement (IFCFeatureElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="507"/>
+        <source>Furnishing Element</source>
+        <translation>Einrichtungselement (IFCFurnishingElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="508"/>
+        <source>Geographical Element</source>
+        <translation>Geographisches Element (IFCGeographicalElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="509"/>
+        <source>Transport Element</source>
+        <translation>Transportelement (IFCTransportElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="510"/>
+        <source>VirtualElement</source>
+        <translation>Virtuelles Element (IFCVirtualElement)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="511"/>
+        <source>Building Element Part</source>
+        <translation>Bauteilteil (IFCBuildingElementPart)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="512"/>
+        <source>All</source>
+        <translation>Alle</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="513"/>
+        <source>None</source>
+        <translation>Keine</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="526"/>
+        <source>Use IFC Space Boundaries (%1 found)</source>
+        <translation>IFC Space Boundaries verwenden (%1 gefunden)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="530"/>
+        <source>Use IFC Space Boundaries (not available)</source>
+        <translation>IFC Space Boundaries verwenden (nicht verfügbar)</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="531"/>
+        <source>No space boundaries found in the IFC file</source>
+        <translation>Keine Space Boundaries in der IFC-Datei gefunden</translation>
+    </message>
+    <message>
+        <location filename="../../src/ImportIFCDialog.cpp" line="557"/>
+        <source>Conversion has not been completed successfully!</source>
+        <translation>Die Konvertierung wurde nicht erfolgreich abgeschlossen!</translation>
     </message>
 </context>
 <context>
     <name>ImportWPConvert</name>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="26"/>
         <source>Convert IFC into VICUS</source>
-        <translation>Konvertiere IFC nach VICUS</translation>
+        <translation type="vanished">Konvertiere IFC nach VICUS</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="69"/>
         <source>Convert</source>
-        <translation>Konvertieren</translation>
+        <translation type="vanished">Konvertieren</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="62"/>
         <source>Use space boundaries</source>
-        <translation>Verwende Space Boundaries</translation>
+        <translation type="vanished">Verwende Space Boundaries</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="48"/>
-        <source>TextLabel</source>
-        <translation></translation>
-    </message>
-    <message>
-        <location filename="../../src/ImportWPConvert.ui" line="55"/>
         <source>Save log</source>
-        <translation>Speichere Log</translation>
+        <translation type="vanished">Speichere Log</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="76"/>
         <source>Advanced</source>
-        <translation>Erweitert</translation>
+        <translation type="vanished">Erweitert</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="110"/>
         <source>Global matching settings</source>
-        <translation>Globale Konvertierungseinstellungen</translation>
+        <translation type="vanished">Globale Konvertierungseinstellungen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="119"/>
         <source>Opening search distance</source>
-        <translation>Suchabstand für Öffnungen</translation>
+        <translation type="vanished">Suchabstand für Öffnungen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="126"/>
         <source>m</source>
-        <translation>m</translation>
+        <translation type="vanished">m</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="133"/>
         <source>Look for openings only in walls</source>
-        <translation>Suche nach Öffnungen nur in Wänden</translation>
+        <translation type="vanished">Suche nach Öffnungen nur in Wänden</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="155"/>
         <source>Matching settings for searching space boundaries</source>
-        <translation>Einstellungen für das Erzeugen von SpaceBoundaries</translation>
+        <translation type="vanished">Einstellungen für das Erzeugen von SpaceBoundaries</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="161"/>
         <source>Construction matching type</source>
-        <translation>Einstellungen für das Finden von Konstruktionen</translation>
+        <translation type="vanished">Einstellungen für das Finden von Konstruktionen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="168"/>
         <source>Full</source>
-        <translation>Voll</translation>
+        <translation type="vanished">Voll</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="178"/>
         <source>Highest priority</source>
-        <translation>Höchste Priorität</translation>
+        <translation type="vanished">Höchste Priorität</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="188"/>
         <source>N constructions</source>
-        <translation>N Konstruktionen (aus Prioritätsliste)</translation>
+        <translation type="vanished">N Konstruktionen (aus Prioritätsliste)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="195"/>
-        <location filename="../../src/ImportWPConvert.ui" line="333"/>
-        <location filename="../../src/ImportWPConvert.cpp" line="60"/>
-        <location filename="../../src/ImportWPConvert.cpp" line="341"/>
         <source>No matching</source>
-        <translation>Keine Konstruktionszuordnung (nur Zonenflächen)</translation>
+        <translation type="vanished">Keine Konstruktionszuordnung (nur Zonenflächen)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="202"/>
         <source>First N construction matching</source>
-        <translation>Finde die ersten N Konstruktionen</translation>
+        <translation type="vanished">Finde die ersten N Konstruktionen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="216"/>
         <source>Construction types used for creating space boundaries</source>
-        <translation>Konstruktionstypen die für das Erzeugen von SpaceBoundaries verwendet werden</translation>
+        <translation type="vanished">Konstruktionstypen die für das Erzeugen von SpaceBoundaries verwendet werden</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="228"/>
         <source>Construction match factor</source>
-        <translation>Abstandsfaktor zum Zuordnen von Konstruktionen</translation>
+        <translation type="vanished">Abstandsfaktor zum Zuordnen von Konstruktionen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="256"/>
         <source>Repair flags</source>
-        <translation>Reparatureinstellungen</translation>
+        <translation type="vanished">Reparatureinstellungen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="262"/>
         <source>Remove doubled space boundaries</source>
-        <translation>Entferne doppelte Space Boundaries</translation>
+        <translation type="vanished">Entferne doppelte Space Boundaries</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="323"/>
         <source>Space boundary matching</source>
-        <translation>Zurodnen von SpaceBoundaries</translation>
+        <translation type="vanished">Zurodnen von SpaceBoundaries</translation>
     </message>
     <message>
         <source>Flip surface polygons</source>
         <translation type="vanished">Drehe Polygone</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="291"/>
         <source>Details</source>
-        <translation>Details</translation>
+        <translation type="vanished">Details</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="297"/>
         <source>More space intersection details</source>
-        <translation>Mehr Informationen zu verschnittenen Räumen</translation>
+        <translation type="vanished">Mehr Informationen zu verschnittenen Räumen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="269"/>
         <source>If checked all errors will be ignored and the finish button will be enabled</source>
-        <translation>Wenn aktiviert, alle Fehler werden ignoriert und die Beenden Schaltfläche wird aktiviert</translation>
+        <translation type="vanished">Wenn aktiviert, alle Fehler werden ignoriert und die Beenden Schaltfläche wird aktiviert</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.ui" line="272"/>
         <source>Ignore convert errors</source>
-        <translation>Ignoriere Konvertierungsfehler</translation>
+        <translation type="vanished">Ignoriere Konvertierungsfehler</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="21"/>
         <source>Convert IFC entities and geometry into VICUS format</source>
-        <translation>Konvertiere IFC Objekte und Geometrie in das VICUS Format</translation>
+        <translation type="vanished">Konvertiere IFC Objekte und Geometrie in das VICUS Format</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="116"/>
         <source>There are no space boundaries in the IFC file</source>
-        <translation>Diese IFC Datei enthält keine Space Boundaries</translation>
+        <translation type="vanished">Diese IFC Datei enthält keine Space Boundaries</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="119"/>
         <source>There are %1 space boundaries in the IFC file</source>
-        <translation>Es gibt %1 Space Boundaries in dieser IFC Datei</translation>
+        <translation type="vanished">Es gibt %1 Space Boundaries in dieser IFC Datei</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="193"/>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Errors while converting:&lt;/font&gt;</source>
-        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Fehler bei der Konvertierung:&lt;/font&gt;</translation>
+        <translation type="vanished">&lt;font color=&quot;#FF0000&quot;&gt;Fehler bei der Konvertierung:&lt;/font&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="182"/>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Conversion errors:&lt;/font&gt;</source>
-        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Konvertierungsfehler:&lt;/font&gt;</translation>
+        <translation type="vanished">&lt;font color=&quot;#FF0000&quot;&gt;Konvertierungsfehler:&lt;/font&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="28"/>
         <source>Wall</source>
-        <translation>Wand (IFCWall)</translation>
+        <translation type="vanished">Wand (IFCWall)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="34"/>
         <source>Slab</source>
-        <translation>Decke oder Fußboden (IFCSlab)</translation>
+        <translation type="vanished">Decke oder Fußboden (IFCSlab)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="40"/>
         <source>Beam</source>
-        <translation>Balken (IFCBeam)</translation>
+        <translation type="vanished">Balken (IFCBeam)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="46"/>
         <source>Covering</source>
-        <translation>Abdeckung (IFCCovering)</translation>
+        <translation type="vanished">Abdeckung (IFCCovering)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="52"/>
         <source>Footing</source>
-        <translation>Fußbodenaufbau (IFCFooting)</translation>
+        <translation type="vanished">Fußbodenaufbau (IFCFooting)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="58"/>
         <source>Full matching</source>
-        <translation>Volle Suche nach Konstruktionen</translation>
+        <translation type="vanished">Volle Suche nach Konstruktionen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="59"/>
         <source>Medium matching</source>
-        <translation>Mittlere Genauigkeit beim Zuordnen</translation>
+        <translation type="vanished">Mittlere Genauigkeit beim Zuordnen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="91"/>
         <source>Check each construction for matches with space surfaces.</source>
-        <translation>Prüfe jede Konstruktion beim Zuordnen zu SpaceBoundaries.</translation>
+        <translation type="vanished">Prüfe jede Konstruktion beim Zuordnen zu SpaceBoundaries.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="95"/>
         <source>Check only the most possible constructions for matching with space surfaces.</source>
-        <translation>Prüfe nur die wahrscheinlichsten Konstruktionen beim Zuordnen von SpaceBoundaries.</translation>
+        <translation type="vanished">Prüfe nur die wahrscheinlichsten Konstruktionen beim Zuordnen von SpaceBoundaries.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="99"/>
         <source>No matching test. All created space boundaries doesn&apos;t have constructions. No windows or doors possible.</source>
-        <translation>Keine Zuordnung. Erzeugte SpaceBoundaries haben keine Konstruktionen. Fenster und Türen können nicht zugeordnet werden.</translation>
+        <translation type="vanished">Keine Zuordnung. Erzeugte SpaceBoundaries haben keine Konstruktionen. Fenster und Türen können nicht zugeordnet werden.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="191"/>
         <source>Converting was successful</source>
-        <translation>Konvertierung erfolgreich</translation>
+        <translation type="vanished">Konvertierung erfolgreich</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="199"/>
         <source>File converted successfully.</source>
-        <translation>Datei erfolgreich konvertiert.</translation>
+        <translation type="vanished">Datei erfolgreich konvertiert.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="205"/>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Error while converting IFC file.&lt;/font&gt;</source>
-        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Fehler beim Konvertieren der IFC Datei.&lt;/font&gt;</translation>
+        <translation type="vanished">&lt;font color=&quot;#FF0000&quot;&gt;Fehler beim Konvertieren der IFC Datei.&lt;/font&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="207"/>
         <source>%1 spaces intersections found.</source>
-        <translation>%1 verschnittene Räume gefunden.</translation>
+        <translation type="vanished">%1 verschnittene Räume gefunden.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="209"/>
         <source>Space intersections.&lt;br&gt;</source>
-        <translation>Verschnittene Räume.&lt;br&gt;</translation>
+        <translation type="vanished">Verschnittene Räume.&lt;br&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="213"/>
         <source>&apos;%1&apos; with &apos;%2&apos;.</source>
-        <translation>&apos;%1&apos; mit &apos;%2&apos;.</translation>
+        <translation type="vanished">&apos;%1&apos; mit &apos;%2&apos;.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="218"/>
         <source>Space %1 with %2 spaces intersected.</source>
-        <translation>Raum %1 ist mit %2 anderen Räumen verschnitten.</translation>
+        <translation type="vanished">Raum %1 ist mit %2 anderen Räumen verschnitten.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="223"/>
         <source>%1 spaces with shared space boundaries found.</source>
-        <translation>%1 Zonen mit gleichen SpaceBoundaries gefunden.</translation>
+        <translation type="vanished">%1 Zonen mit gleichen SpaceBoundaries gefunden.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="225"/>
         <source>Space %1 shares with %2 spaces at least one space boundary.</source>
-        <translation>Zone %1 teilt sich mit Zone %2 mindestens eine SpaceBoundary.</translation>
+        <translation type="vanished">Zone %1 teilt sich mit Zone %2 mindestens eine SpaceBoundary.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="229"/>
         <source>%1 space boundaries with identical surfaces found.</source>
-        <translation>%1 Space Boundaries mit gleichen Flächen gefunden.</translation>
+        <translation type="vanished">%1 Space Boundaries mit gleichen Flächen gefunden.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="232"/>
         <source>%1 opening space boundaries found which are used more than once in one space.</source>
-        <translation>%1 Space Boundaries für Öffnungen, welche mehr als einmal in einem Raum verwendet wurden, gefunden.</translation>
+        <translation type="vanished">%1 Space Boundaries für Öffnungen, welche mehr als einmal in einem Raum verwendet wurden, gefunden.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="235"/>
         <source>%1 component instances found which have non valid surface ids.</source>
-        <translation>%1 Komponenten gefunden welche ungültige Flächen IDs haben.</translation>
+        <translation type="vanished">%1 Komponenten gefunden welche ungültige Flächen IDs haben.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="238"/>
         <source>%1 openings don&apos;t have a connection to a space boundary.</source>
-        <translation>%1 Öffnungen haben keine Verbindung zu einer SpaceBoundary.</translation>
+        <translation type="vanished">%1 Öffnungen haben keine Verbindung zu einer SpaceBoundary.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="269"/>
         <source>Converting ...</source>
-        <translation>Konvertieren ...</translation>
+        <translation type="vanished">Konvertieren ...</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="299"/>
         <source>Specify name for log file</source>
-        <translation>Gebe Namen für die Logdatei</translation>
+        <translation type="vanished">Gebe Namen für die Logdatei</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPConvert.cpp" line="301"/>
         <source>Log file (*.log);;All files (*.*)</source>
-        <translation>Logdatei (*.log);;Alle Dateien (*.*)</translation>
+        <translation type="vanished">Logdatei (*.log);;Alle Dateien (*.*)</translation>
     </message>
     <message>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Errors while converting:&lt;/font&gt;&lt;br&gt;</source>
@@ -340,123 +915,100 @@
 <context>
     <name>ImportWPRead</name>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="43"/>
         <source>Read the given IFC file</source>
-        <translation>Lese die angegebene IFC Datei</translation>
+        <translation type="vanished">Lese die angegebene IFC Datei</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="46"/>
         <source>Read</source>
-        <translation>Lesen</translation>
+        <translation type="vanished">Lesen</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="69"/>
         <source>...</source>
-        <translation>...</translation>
+        <translation type="vanished">...</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="27"/>
         <source>If checked read errors will be ignored and one can go further to convert</source>
-        <translation>Wenn akticiert werden alle Lesefehler ignoriert und es kann mit dem Konvertieren begonnen werden</translation>
+        <translation type="vanished">Wenn akticiert werden alle Lesefehler ignoriert und es kann mit dem Konvertieren begonnen werden</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="20"/>
         <source>IFC file name</source>
-        <translation>IFC Dateiname</translation>
+        <translation type="vanished">IFC Dateiname</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="30"/>
         <source>Ignore read error</source>
-        <translation>Ignoriere Lesefehler</translation>
+        <translation type="vanished">Ignoriere Lesefehler</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.ui" line="14"/>
         <source>Read IFC file</source>
-        <translation>Lese IFC Datei</translation>
+        <translation type="vanished">Lese IFC Datei</translation>
     </message>
     <message>
         <source>You can load an IFC file.</source>
         <translation type="vanished">Sie können die IFC Datei einlesen.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="17"/>
         <source>IFC file</source>
-        <translation>IFC Datei</translation>
+        <translation type="vanished">IFC Datei</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="18"/>
         <source>You can specify and read an IFC file.</source>
-        <translation>Festlegen und Konvertieren einer IFC Datei.</translation>
+        <translation type="vanished">Festlegen und Konvertieren einer IFC Datei.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="23"/>
         <source>The reading of the IFC file will start immidiately after enter a valid filename.</source>
-        <translation>Die IFC Datei wird unmittelbar nach dem Festlegen eines gültigen Namens gelesen.</translation>
+        <translation type="vanished">Die IFC Datei wird unmittelbar nach dem Festlegen eines gültigen Namens gelesen.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="36"/>
         <source>Open ifc file</source>
-        <translation>Lese IFC Datei</translation>
+        <translation type="vanished">Lese IFC Datei</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="36"/>
         <source>ifc STEP file (*.ifc)</source>
-        <translation>IFC STEP Datei (*.ifc)</translation>
+        <translation type="vanished">IFC STEP Datei (*.ifc)</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="44"/>
         <source>No filename.</source>
-        <translation>Kein Dateiname.</translation>
+        <translation type="vanished">Kein Dateiname.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="57"/>
         <source>Reading ...</source>
-        <translation>Lesen ...</translation>
+        <translation type="vanished">Lesen ...</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="70"/>
         <source>File read successfully with %1 IFC entities.</source>
-        <translation>Datei erfolgreich eingelesen mit %1 IFC Objekten.</translation>
+        <translation type="vanished">Datei erfolgreich eingelesen mit %1 IFC Objekten.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="71"/>
         <source>Project contains %1 buildings and %2 spaces.</source>
-        <translation>Das Projekt enthält %1 Gebäude und %2 Zonen.</translation>
+        <translation type="vanished">Das Projekt enthält %1 Gebäude und %2 Zonen.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="78"/>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Fatal error&lt;/font&gt;</source>
-        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Schwerer Fehler&lt;/font&gt;</translation>
+        <translation type="vanished">&lt;font color=&quot;#FF0000&quot;&gt;Schwerer Fehler&lt;/font&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="79"/>
         <source>Missing objects</source>
-        <translation>Fehlende Objekte</translation>
+        <translation type="vanished">Fehlende Objekte</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="87"/>
         <source>&lt;font color=&quot;#FF0000&quot;&gt;Read Errors:&lt;/font&gt;</source>
-        <translation>&lt;font color=&quot;#FF0000&quot;&gt;Lesefehler:&lt;/font&gt;</translation>
+        <translation type="vanished">&lt;font color=&quot;#FF0000&quot;&gt;Lesefehler:&lt;/font&gt;</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="89"/>
         <source>Read Errors:</source>
-        <translation>Lesefehler:</translation>
+        <translation type="vanished">Lesefehler:</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="93"/>
         <source>Read Warnings:</source>
-        <translation>Warnungen beim Lesen:</translation>
+        <translation type="vanished">Warnungen beim Lesen:</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="111"/>
         <source>Filename is valid. Start reading.</source>
-        <translation>Dateiname ist gültig. Starte das Lesen.</translation>
+        <translation type="vanished">Dateiname ist gültig. Starte das Lesen.</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWPRead.cpp" line="116"/>
         <source>This is not a valid filename.</source>
-        <translation>Kein gültiger Dateiname.</translation>
+        <translation type="vanished">Kein gültiger Dateiname.</translation>
     </message>
     <message>
         <source>File read successfully with %1 IFC entities.&lt;br&gt;</source>
@@ -490,14 +1042,12 @@
 <context>
     <name>ImportWizard</name>
     <message>
-        <location filename="../../src/ImportWizard.cpp" line="20"/>
         <source>Import IFC Assistant</source>
-        <translation>IFC Importassistent</translation>
+        <translation type="vanished">IFC Importassistent</translation>
     </message>
     <message>
-        <location filename="../../src/ImportWizard.ui" line="14"/>
         <source>IFC Import Wizard</source>
-        <translation>IFC Import Assistent</translation>
+        <translation type="vanished">IFC Import Assistent</translation>
     </message>
 </context>
 </TS>

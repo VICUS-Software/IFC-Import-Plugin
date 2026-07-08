@@ -13,6 +13,7 @@
 #include "IFCC_GeometryInputData.h"
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
+#include "IFCC_Logger.h"
 #include "IFCC_BuildingElement.h"
 #include "IFCC_RepresentationHelper.h"
 #include "IFCC_CSG_Adapter.h"
@@ -63,6 +64,124 @@ void Opening::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std:
 		return;
 
 	m_originalMesh = surfacesFromRepresentation(productShape, m_surfaces, errors, OT_Opening, m_id);
+	repairOversizedBody();
+}
+
+void Opening::repairOversizedBody() {
+	// Threshold above which a void body cannot be a plausible wall/roof opening —
+	// doors reach ~2.5m, wall depths ~0.8m; the broken WSHH bodies are 7-10m.
+	const double kMaxPlausibleExtent = 3.0;
+	// Maximum believable wall slab depth for the reconstructed void [m].
+	const double kMaxSlabDepth = 1.5;
+
+	if(m_surfaces.size() < 4)
+		return;
+
+	// Extrusion axis from the two largest non-parallel face normals: their cross
+	// product is the box axis. (AABB axes are wrong for rotated buildings.)
+	std::vector<std::pair<double, IBKMK::Vector3D>> areasNormals;
+	for(const Surface& surf : m_surfaces) {
+		if(surf.polygon().size() < 3)
+			continue;
+		areasNormals.push_back({surf.area(), surf.planeNormalVec()});
+	}
+	if(areasNormals.size() < 4)
+		return;
+	std::sort(areasNormals.begin(), areasNormals.end(),
+			  [](const auto& a, const auto& b) { return a.first > b.first; });
+	IBKMK::Vector3D n1 = areasNormals.front().second;
+	IBKMK::Vector3D axis(0,0,0);
+	for(size_t i=1; i<areasNormals.size(); ++i) {
+		IBKMK::Vector3D c = n1.crossProduct(areasNormals[i].second);
+		if(c.magnitude() > 0.3) {
+			axis = c.normalized();
+			break;
+		}
+	}
+	if(axis.magnitude() < 0.5)
+		return;
+
+	// Project all vertices onto the axis.
+	std::vector<double> ts;
+	for(const Surface& surf : m_surfaces)
+		for(const IBKMK::Vector3D& v : surf.polygon())
+			ts.push_back(axis.scalarProduct(v));
+	if(ts.size() < 8)
+		return;
+	std::sort(ts.begin(), ts.end());
+	double tmin = ts.front();
+	double tmax = ts.back();
+	if(tmax - tmin <= kMaxPlausibleExtent)
+		return;		// plausible body — nothing to repair
+
+	// Interior stations: distinct t-values clearly away from both inflated caps.
+	const double kCapMargin = 0.5;
+	double intMin = 1e20, intMax = -1e20;
+	for(double t : ts) {
+		if(t > tmin + kCapMargin && t < tmax - kCapMargin) {
+			intMin = std::min(intMin, t);
+			intMax = std::max(intMax, t);
+		}
+	}
+	if(intMin > intMax)
+		return;		// pure two-station box — no interior information, leave as is
+	double depth = intMax - intMin;
+	if(depth > kMaxSlabDepth)
+		return;		// interior spread itself implausible — don't guess
+	if(depth < 0.01) {
+		// Single interior station (zero-depth slab): widen symmetrically a bit so
+		// the two faces are distinct planes.
+		intMin -= 0.02;
+		intMax += 0.02;
+	}
+
+	// Cross-section outline: 2D convex hull of all vertices projected along axis.
+	IBKMK::Vector3D up = std::fabs(axis.m_z) < 0.9 ? IBKMK::Vector3D(0,0,1) : IBKMK::Vector3D(1,0,0);
+	IBKMK::Vector3D u = axis.crossProduct(up).normalized();
+	IBKMK::Vector3D w = axis.crossProduct(u).normalized();
+	std::vector<std::pair<double,double>> pts2;
+	for(const Surface& surf : m_surfaces)
+		for(const IBKMK::Vector3D& v : surf.polygon())
+			pts2.push_back({u.scalarProduct(v), w.scalarProduct(v)});
+	// Andrew's monotone chain.
+	std::sort(pts2.begin(), pts2.end());
+	pts2.erase(std::unique(pts2.begin(), pts2.end(), [](const auto& a, const auto& b){
+		return std::fabs(a.first-b.first) < 1e-9 && std::fabs(a.second-b.second) < 1e-9;
+	}), pts2.end());
+	if(pts2.size() < 3)
+		return;
+	auto cross2 = [](const std::pair<double,double>& o, const std::pair<double,double>& a, const std::pair<double,double>& b){
+		return (a.first-o.first)*(b.second-o.second) - (a.second-o.second)*(b.first-o.first);
+	};
+	std::vector<std::pair<double,double>> hull(2*pts2.size());
+	size_t k = 0;
+	for(size_t i=0; i<pts2.size(); ++i) {
+		while(k >= 2 && cross2(hull[k-2], hull[k-1], pts2[i]) <= 0) --k;
+		hull[k++] = pts2[i];
+	}
+	for(size_t i=pts2.size()-1, t0=k+1; i>0; --i) {
+		while(k >= t0 && cross2(hull[k-2], hull[k-1], pts2[i-1]) <= 0) --k;
+		hull[k++] = pts2[i-1];
+	}
+	hull.resize(k-1);
+	if(hull.size() < 3)
+		return;
+
+	// Demote every original (inflated) face, then add the true cross-section faces.
+	for(Surface& surf : m_surfaces)
+		surf.setSideType(Surface::ST_UnProbableSide);
+	for(double t : {intMin, intMax}) {
+		polygon3D_t poly;
+		for(const auto& p : hull)
+			poly.push_back(u * p.first + w * p.second + axis * t);
+		Surface surf(poly);
+		surf.setSideType(Surface::ST_ProbableSide);
+		m_surfaces.push_back(surf);
+	}
+	Logger::instance() << "opening-repair: id=" << m_id << " name='" << m_name << "'"
+					   << " inflated extent=" << (tmax - tmin)
+					   << " -> slab [" << intMin << "," << intMax << "] depth=" << depth
+					   << " hullPts=" << hull.size();
 }
 
 const std::vector<int>& Opening::openingElementIds() const {
@@ -229,12 +348,20 @@ void Opening::insertContainingElementId(std::vector<int>& other) const {
 	}
 }
 
-void Opening::setSpaceBoundary(std::shared_ptr<SpaceBoundary> sb) {
-	m_spaceBoundary = sb;
+void Opening::addSpaceBoundary(std::shared_ptr<SpaceBoundary> sb) {
+	m_spaceBoundaries.push_back(sb);
 }
 
 bool Opening::hasSpaceBoundary() const {
-	return m_spaceBoundary.get() != nullptr;
+	return !m_spaceBoundaries.empty();
+}
+
+bool Opening::hasSpaceBoundaryInSpace(const std::string& spaceGuid) const {
+	for(const auto& sb : m_spaceBoundaries) {
+		if(sb && sb->guidRelatedSpace() == spaceGuid)
+			return true;
+	}
+	return false;
 }
 
 } // namespace IFCC

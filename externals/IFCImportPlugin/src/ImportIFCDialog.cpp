@@ -39,7 +39,10 @@ ImportIFCDialog::ImportIFCDialog(QWidget *parent, IFCC::IFCReader* reader) :
 	for(auto type : IFCC::constructionSimilarTypes()) {
 		QListWidgetItem *item = new QListWidgetItem(elementTypeText(type));
 		item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-		item->setCheckState(Qt::Checked);
+		// Columns are off by default: they often pierce rooms and add no thermal value.
+		// User can opt back in by checking the box.
+		const Qt::CheckState defaultState = (type == IFCC::BET_Column) ? Qt::Unchecked : Qt::Checked;
+		item->setCheckState(defaultState);
 		item->setData(Qt::UserRole, (int)type);
 		ui->listWidgetConstructionTypes->addItem(item);
 	}

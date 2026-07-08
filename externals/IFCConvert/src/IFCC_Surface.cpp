@@ -3,6 +3,7 @@
 #include <limits>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 
 #include <IBK_math.h>
 #include <IBK_assert.h>
@@ -689,12 +690,17 @@ TiXmlElement * Surface::writeXMLNew(TiXmlElement * parent, const ConvertOptions&
 		TiXmlElement * polyChild = new TiXmlElement("Polygon3D");
 		e->LinkEndChild(polyChild);
 
-		// encode vectors
-		polyChild->SetAttribute("offset", poly3D.offset().toString());
-		polyChild->SetAttribute("normal", poly3D.normal().toString());
-		polyChild->SetAttribute("localX", poly3D.localX().toString());
+		// Encode vectors with 16 significant digits — bit-exact IEEE-754 round-trip.
+		// The default 6-digit ostream precision shifts vertices by up to 1e-4 x value,
+		// which can make the (0,0) first vertex collinear after VICUS' read-time
+		// collinear elimination ("First point of polyline must be 0,0!" errors) —
+		// and it is what willSurviveXmlRoundTrip assumes.
+		polyChild->SetAttribute("offset", poly3D.offset().toString(16));
+		polyChild->SetAttribute("normal", poly3D.normal().toString(16));
+		polyChild->SetAttribute("localX", poly3D.localX().toString(16));
 
 		std::stringstream vals;
+		vals << std::setprecision(16);
 		const std::vector<IBKMK::Vector2D> & polyVertexes = poly3D.polyline().vertexes();
 		for (unsigned int i=0; i<polyVertexes.size(); ++i) {
 			vals << polyVertexes[i].m_x << " " << polyVertexes[i].m_y;

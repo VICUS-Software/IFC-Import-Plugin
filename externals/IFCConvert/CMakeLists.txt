@@ -22,6 +22,7 @@ include_directories(
 	${PROJECT_SOURCE_DIR}/../CCM/src
 	${PROJECT_SOURCE_DIR}/../DataIO/src
 	${PROJECT_SOURCE_DIR}/../VicOSM/src
+	${PROJECT_SOURCE_DIR}/../VicIFC/src
 	${PROJECT_SOURCE_DIR}/../ifcplusplus/src/IfcPlusPlus/src/external/glm/glm
 )
 
@@ -54,7 +55,7 @@ else()
 	add_library( ${PROJECT_NAME} STATIC ${LIB_SRCS} ${LIB_MOC_SRCS} )
 endif()
 
- target_link_libraries(IFCConvert PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad OpenMP::OpenMP_CXX)
+ target_link_libraries(IFCConvert PRIVATE Qt6::Core Qt6::Widgets Vicus VicIFC Nandrad OpenMP::OpenMP_CXX)
  if(TARGET IFCConvert_static)
-	target_link_libraries(IFCConvert_static PRIVATE Qt6::Core Qt6::Widgets Vicus Nandrad OpenMP::OpenMP_CXX)
+	target_link_libraries(IFCConvert_static PRIVATE Qt6::Core Qt6::Widgets Vicus VicIFC Nandrad OpenMP::OpenMP_CXX)
  endif()

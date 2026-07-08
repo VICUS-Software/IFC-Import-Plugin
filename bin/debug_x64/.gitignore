@@ -1,7 +1,0 @@
-*.exe
-/IFC2BESTest
-/IFC2BESTest.ilk
-/IFC2BESTest.pdb
-/dump_mesh_debug.txt
-/IfcDebug
-/IfcDebug.pdb

@@ -258,8 +258,13 @@ double areaPolygon(const std::vector<IBKMK::Vector3D>& poly) {
 	if(poly.empty())
 		return 0;
 
+	// Newell sum over ALL cyclic edges including the closing edge poly[n-1] x poly[0].
+	// Without the closing term the sum is not translation-invariant: a 1 m2 unit
+	// square placed at (100,100) yields "51 m2", degenerate needle polygons get
+	// large phantom areas, and every area-based matching gate is distorted for
+	// geometry far from the origin.
 	IBKMK::Vector3D tmp;
-	for(size_t i=0; i<poly.size()-1; ++i) {
+	for(size_t i=0; i<poly.size(); ++i) {
 		tmp = tmp + poly[i].crossProduct(poly[(i+1)%poly.size()]);
 	}
 	return tmp.magnitude()*0.5;
@@ -365,6 +370,8 @@ BuildingElementTypes getObjectType(const std::shared_ptr<IfcObjectDefinition>& o
 		return BET_Beam;
 	if(dynamic_pointer_cast<IfcChimney>(od) != nullptr)
 		return BET_Chimney;
+	if(dynamic_pointer_cast<IfcColumn>(od) != nullptr)
+		return BET_Column;
 	if(dynamic_pointer_cast<IfcCovering>(od) != nullptr)
 		return BET_Covering;
 	if(dynamic_pointer_cast<IfcCurtainWall>(od) != nullptr)
@@ -582,6 +589,8 @@ TiXmlElement *writeXMLPolygon2D(const std::vector<IBKMK::Vector2D> &polygon, TiX
 	parent->LinkEndChild(e);
 
 	std::stringstream vals;
+	// 16 significant digits: bit-exact round-trip, matches Surface::writeXMLNew.
+	vals << std::setprecision(16);
 	for (unsigned int i=0; i<polygon.size(); ++i) {
 		vals << polygon[i].m_x << " " << polygon[i].m_y;
 		if (i<polygon.size()-1)  vals << ", ";

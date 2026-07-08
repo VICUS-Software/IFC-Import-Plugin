@@ -149,6 +149,15 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 		// merge per-space errors back into the caller-provided error list
 		for(std::vector<ConvertError> & es : perSpaceIfcErrors)
 			errors.insert(errors.end(), es.begin(), es.end());
+
+		// Link openings to their attached opening SBs SEQUENTIALLY: the openings
+		// vector is shared across spaces, and doing this inside the parallel region
+		// above was a data race (concurrent Opening::addSpaceBoundary calls).
+		for(size_t k = 0; k < nIfc; ++k) {
+			if(Cancellation::isCancelled())
+				break;
+			m_spaces[ifcIndices[k]]->linkOpeningsToSpaceBoundaries(buildingElements, openings);
+		}
 	}
 
 	// Construction path: parallel Phase 1, sequential Phase 2

@@ -17,6 +17,29 @@
 
 namespace IFCC {
 
+/*! Opening id selected via IFCC_DEBUG_OPENING_ID for unthrottled match logging. */
+static int debugOpeningId() {
+	static int id = [](){
+		const char* e = std::getenv("IFCC_DEBUG_OPENING_ID");
+		return e ? std::atoi(e) : -1;
+	}();
+	return id;
+}
+
+/*! Unnormalized Newell normal of a polygon (orientation-sensitive). */
+static IBKMK::Vector3D newellNormal(const polygon3D_t& poly) {
+	IBKMK::Vector3D n(0,0,0);
+	const size_t cnt = poly.size();
+	for(size_t i=0; i<cnt; ++i) {
+		const IBKMK::Vector3D& a = poly[i];
+		const IBKMK::Vector3D& b = poly[(i+1)%cnt];
+		n.m_x += (a.m_y - b.m_y) * (a.m_z + b.m_z);
+		n.m_y += (a.m_z - b.m_z) * (a.m_x + b.m_x);
+		n.m_z += (a.m_x - b.m_x) * (a.m_y + b.m_y);
+	}
+	return n;
+}
+
 Building::Building(int id) :
 	EntityBase(id)
 {}
@@ -151,68 +174,235 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 	//           IFCs with broken/missing IfcRelVoidsElement.
 	//   Pass C: coplanar-accept fallback for curtain-wall scenarios where the
 	//           room's SB is a partial slice of the full wall face.
-	size_t matchedStrict = 0, matchedTopology = 0, matchedCoplanar = 0;
+	size_t matchedStrict = 0, matchedTopology = 0, matchedCoplanar = 0, matchedMultiSpace = 0;
+	// A pass-A/B winner whose element sits within this distance of the matched patch
+	// is trusted outright; above it the later (less trusted) passes still get a
+	// chance to produce a CLOSER candidate — WSHH-style room-spanning opening boxes
+	// produce large phantom intersections on the topology-registered wall while the
+	// true wall only matches via the unfiltered/straddle paths.
+	const double kTrustedElemDist = 2.0;
+	// A winner that captures less than half the element area is equally suspicious —
+	// keep evaluating later passes so a full-size match can outrank the sliver.
+	auto suspicious = [kTrustedElemDist](const Space::OpeningMatchCandidate& b) -> bool {
+		if(!b.parentSB)
+			return true;
+		if(b.dist > kTrustedElemDist)
+			return true;
+		if(b.openingElem) {
+			double elemArea = b.openingElem->openingArea();
+			if(elemArea > 0.1 && b.area < 0.5 * elemArea)
+				return true;
+		}
+		return false;
+	};
+	// Debug/eval kill-switch: IFCC_NO_MULTISPACE=1 restores the pre-multi-space
+	// behavior (openings with any SB skipped, single best-space commit only).
+	const bool noMultiSpace = (std::getenv("IFCC_NO_MULTISPACE") != nullptr);
+	// Per-space best candidate for one opening — openings can span several spaces
+	// (interior doors/windows bound TWO rooms, shaft openings even more), so the
+	// sweep keeps one candidate per space instead of a single global winner.
+	struct SpaceCandidate {
+		std::shared_ptr<Space>			space;
+		Space::OpeningMatchCandidate	cand;
+		bool							fromCoplanar = false;
+		size_t*							counter = nullptr;
+	};
 	for(Opening& op : openings) {
-		if(op.hasSpaceBoundary())
+		// Openings already linked per-space keep those links; the sweep below only
+		// considers spaces WITHOUT a link yet (an interior door matched in room A but
+		// deferred/failed in room B must still get its room-B side). For such openings
+		// only the trusted topology pass runs — they are not orphans, so the loose
+		// B/C rescue passes don't apply.
+		const bool hadSB = op.hasSpaceBoundary();
+		if(noMultiSpace && hadSB)
 			continue;
 
-		std::shared_ptr<Space> bestSpace;
-		Space::OpeningMatchCandidate best;
+		std::vector<SpaceCandidate> perSpace;
+
+		auto runPass = [&](bool ignoreContainedOpeningsFilter, bool allowCoplanarAccept, size_t* counter) {
+			for(const auto& storey : m_storeys) {
+				for(const auto& space : storey->spaces()) {
+					if(op.hasSpaceBoundaryInSpace(space->m_guid))
+						continue;
+					Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
+						ignoreContainedOpeningsFilter, allowCoplanarAccept);
+					if(!c.parentSB)
+						continue;
+					auto it = std::find_if(perSpace.begin(), perSpace.end(),
+										   [&space](const SpaceCandidate& sc) -> bool { return sc.space == space; });
+					if(it == perSpace.end())
+						perSpace.push_back(SpaceCandidate{space, c, allowCoplanarAccept, counter});
+					else if(Space::isBetterOpeningMatch(c, it->cand)) {
+						it->cand = c;
+						it->fromCoplanar = allowCoplanarAccept;
+						it->counter = counter;
+					}
+				}
+			}
+		};
+		auto globalBest = [&perSpace]() -> SpaceCandidate* {
+			SpaceCandidate* b = nullptr;
+			for(auto& sc : perSpace)
+				if(b == nullptr || Space::isBetterOpeningMatch(sc.cand, b->cand))
+					b = &sc;
+			return b;
+		};
 
 		// Pass A — strict intersect, IFC topology required.
-		for(const auto& storey : m_storeys) {
-			for(const auto& space : storey->spaces()) {
-				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
-					/*ignoreContainedOpeningsFilter=*/false, /*allowCoplanarAccept=*/false);
-				if(c.area > best.area) {
-					best = c;
-					bestSpace = space;
-				}
+		runPass(/*ignoreContainedOpeningsFilter=*/false, /*allowCoplanarAccept=*/false, &matchedTopology);
+		SpaceCandidate* best = globalBest();
+
+		if(!hadSB) {
+			// Pass B — strict intersect, no topology filter. Entered when pass A found
+			// nothing OR its winner is suspicious (far from the element / sliver-sized).
+			if(best == nullptr || suspicious(best->cand)) {
+				runPass(/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/false, &matchedStrict);
+				best = globalBest();
+			}
+			// Pass C — coplanar-accept fallback.
+			if(best == nullptr || suspicious(best->cand)) {
+				runPass(/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/true, &matchedCoplanar);
+				best = globalBest();
 			}
 		}
-		if(bestSpace && best.area > 0.0) {
-			bestSpace->commitOpeningMatch(op, best, convertOptions);
-			++matchedTopology;
+		if(best == nullptr)
 			continue;
-		}
 
-		// Pass B — strict intersect, no topology filter.
-		for(const auto& storey : m_storeys) {
-			for(const auto& space : storey->spaces()) {
-				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
-					/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/false);
-				if(c.area > best.area) {
-					best = c;
-					bestSpace = space;
-				}
+		const Space::OpeningMatchCandidate& bc = best->cand;
+		double elemArea = bc.openingElem ? bc.openingElem->openingArea() : 0.0;
+		bool primaryCommitted = false;
+		if(!hadSB && bc.area > 0.0) {
+			// Coverage sanity: if even the building-wide best candidate captures less
+			// than a third of the window/door area, every reachable surface merely
+			// grazes the opening (WSHH: 10m opening boxes passing through rooms whose
+			// facade SB has a hole where the window belongs). Committing the sliver
+			// glues the window onto an unrelated wall fragment — worse than leaving
+			// the opening unmatched and reporting it.
+			if(elemArea > 0.1 && bc.area < 0.30 * elemArea) {
+				Logger::instance() << "Building::updateStoreys: SKIP sliver match opening id=" << op.m_id
+								   << " name='" << op.m_name << "' bestArea=" << bc.area
+								   << " elemArea=" << elemArea
+								   << " sb='" << bc.parentSB->m_name << "'";
 			}
-		}
-		if(bestSpace && best.area > 0.0) {
-			bestSpace->commitOpeningMatch(op, best, convertOptions);
-			++matchedStrict;
-			continue;
-		}
-
-		// Pass C — coplanar-accept fallback.
-		for(const auto& storey : m_storeys) {
-			for(const auto& space : storey->spaces()) {
-				Space::OpeningMatchCandidate c = space->findBestOpeningMatch(op, buildingElements, convertOptions,
-					/*ignoreContainedOpeningsFilter=*/true, /*allowCoplanarAccept=*/true);
-				if(c.area > best.area) {
-					best = c;
-					bestSpace = space;
-				}
+			else {
+				best->space->commitOpeningMatch(op, bc, convertOptions);
+				if(best->counter)
+					++(*best->counter);
+				primaryCommitted = true;
 			}
 		}
 
-		if(bestSpace && best.area > 0.0) {
-			bestSpace->commitOpeningMatch(op, best, convertOptions);
-			++matchedCoplanar;
+		// Multi-space commits: attach the opening in every FURTHER space it
+		// geometrically bounds. Gated much stricter than the primary commit — a
+		// second room side must look like a full-quality match on its own (strict
+		// intersect, near the element, covering the element) so WSHH-style phantom
+		// intersections in passed-through rooms don't gain extra attachments.
+		//
+		// Opposite-side gate: a genuine further room side lies on the other face of
+		// the SAME wall — a near-copy of an existing attachment (parallel plane,
+		// centroid within the opening body depth). Phantom intersections of oversized
+		// opening boxes sit meters away laterally (next room along the facade) or on
+		// perpendicular partitions, and fail one of the two checks.
+		const double kMaxSideSeparation = 1.2;   // [m] wall assembly depth + clip-offset slack
+		const double kMinSideParallel   = 0.7;   // |cos| between side normals
+		std::vector<const Surface*> committedSides;
+		for(const auto& sb : op.spaceBoundaries()) {
+			if(sb)
+				committedSides.push_back(&sb->surface());
+		}
+		if(primaryCommitted)
+			committedSides.push_back(&bc.mergedSurface);
+		auto isOppositeSide = [&committedSides, kMaxSideSeparation, kMinSideParallel](const Surface& cand) -> bool {
+			IBKMK::Vector3D nc = newellNormal(cand.polygon());
+			double ncLen = nc.magnitude();
+			if(ncLen < 1e-10)
+				return false;
+			for(const Surface* ref : committedSides) {
+				IBKMK::Vector3D nr = newellNormal(ref->polygon());
+				double nrLen = nr.magnitude();
+				if(nrLen < 1e-10)
+					continue;
+				double cosAngle = std::fabs(nc.scalarProduct(nr)) / (ncLen * nrLen);
+				if(cosAngle < kMinSideParallel)
+					continue;
+				double dist = (cand.centroid() - ref->centroid()).magnitude();
+				if(dist <= kMaxSideSeparation)
+					return true;
+			}
+			return false;
+		};
+		// Trust anchor: mirroring a wrong primary onto the wall's other face doubles the
+		// damage (WSHH box openings glued to an interior partition get a second copy in
+		// the room behind it). Openings without any per-space attachment only receive
+		// further-space commits when the fallback primary itself is trustworthy — the
+		// element sits close to the committed patch.
+		const bool anchorTrusted = hadSB || (primaryCommitted && bc.dist <= kTrustedElemDist);
+		for(SpaceCandidate& sc : perSpace) {
+			if(noMultiSpace || !anchorTrusted)
+				break;
+			if(primaryCommitted && &sc == best)
+				continue;
+			if(sc.fromCoplanar)
+				continue;
+			if(!sc.cand.parentSB || sc.cand.area <= 0.0)
+				continue;
+			// Must be the opposite face of an already-attached side — otherwise it's a
+			// lateral/perpendicular phantom intersection of an oversized opening body.
+			if(!isOppositeSide(sc.cand.mergedSurface)) {
+				if(op.m_id == debugOpeningId())
+					Logger::instance() << "  dbg-open: MULTI-SPACE reject (not opposite side) space='"
+									   << sc.space->m_name << "' sb='" << sc.cand.parentSB->m_name << "'";
+				continue;
+			}
+			double scElemArea = sc.cand.openingElem ? sc.cand.openingElem->openingArea() : 0.0;
+			const bool hasAreaSignal = scElemArea > 0.1;
+			const bool hasDistSignal = sc.cand.dist < 1e19;
+			// Without any quality signal (no element geometry AND no position) a
+			// further-space commit is guesswork — leave it to the primary only.
+			if(!hasAreaSignal && !hasDistSignal)
+				continue;
+			if(hasAreaSignal && sc.cand.area < 0.5 * scElemArea)
+				continue;
+			if(sc.cand.area < 0.5 * bc.area)
+				continue;
+			if(hasDistSignal) {
+				// Allow slightly beyond the trusted distance when even the best match
+				// sits far out (placement origin at a corner of the opening box).
+				double distCap = std::max(kTrustedElemDist, bc.dist < 1e19 ? 1.25 * bc.dist : kTrustedElemDist);
+				if(sc.cand.dist > distCap)
+					continue;
+			}
+			sc.space->commitOpeningMatch(op, sc.cand, convertOptions);
+			++matchedMultiSpace;
+			Logger::instance() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
+							   << " name='" << op.m_name << "' space='" << sc.space->m_name << "'"
+							   << " sb='" << sc.cand.parentSB->m_name << "' area=" << sc.cand.area
+							   << " dist=" << sc.cand.dist;
 		}
 	}
 	Logger::instance() << "Building::updateStoreys: cross-space fallback matched "
 					   << matchedTopology << " topology + " << matchedStrict << " strict + "
-					   << matchedCoplanar << " coplanar of " << openings.size() << " openings";
+					   << matchedCoplanar << " coplanar + " << matchedMultiSpace
+					   << " multi-space of " << openings.size() << " openings";
+
+	// Post-mortem: every window/door opening still without any space boundary is a
+	// lost subsurface — log them with the data needed to debug (IFCC_DEBUG_OPENING_ID).
+	for(const Opening& op : openings) {
+		if(op.hasSpaceBoundary())
+			continue;
+		bool isWindowOrDoor = false;
+		for(int eid : op.openingElementIds()) {
+			std::shared_ptr<BuildingElement> be = buildingElements.fromID(eid);
+			if(be && (be->type() == BET_Window || be->type() == BET_Door)) {
+				isWindowOrDoor = true;
+				break;
+			}
+		}
+		if(isWindowOrDoor) {
+			Logger::instance() << "Building::updateStoreys: UNMATCHED opening id=" << op.m_id
+							   << " guid=" << op.guid() << " name='" << op.m_name << "'";
+		}
+	}
 
 	return true;
 }

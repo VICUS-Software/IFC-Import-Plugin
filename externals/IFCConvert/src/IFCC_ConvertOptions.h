@@ -50,6 +50,16 @@ public:
 	bool							m_requireOppositeNormals = false;
 	/*! Upper bound on the iterative subdivision loop in createSpaceBoundaries_2. */
 	int								m_maxMatchIterations = 500;
+	/*! If true (default), IFC-authored space boundaries are re-anchored onto the
+		space's own solid shell: SB polygons within m_shellSnapTolerance of a space
+		face are snapped onto that face and clipped to it, and uncovered parts of
+		the shell are filled with "Missing" SBs. Heals the typical authoring slop
+		(1 cm plane offsets, wall-thickness strips at room edges, incomplete SB
+		sets) that otherwise leaves room volumes open. */
+	bool							m_anchorSBsToSpaceShell = true;
+	/*! Max plane offset [m] healed by the shell anchoring. Real-world authored
+		SBs sit up to several centimeters off the space solid (WSHH: 7 cm). */
+	double							m_shellSnapTolerance = 0.08;
 	bool							m_createMissingSite = true;
 	bool							m_writeConstructionElements = false;
 	bool							m_writeBuildingElements = false;

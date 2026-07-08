@@ -8,6 +8,9 @@
 
 
 #include <ifcpp/IFC4X3/include/IfcRelSpaceBoundary.h>
+#include <ifcpp/IFC4X3/include/IfcRelContainedInSpatialStructure.h>
+#include <ifcpp/IFC4X3/include/IfcRelAggregates.h>
+#include <ifcpp/IFC4X3/include/IfcSpatialElement.h>
 #include <ifcpp/IFC4X3/include/IfcWall.h>
 #include <ifcpp/IFC4X3/include/IfcBeam.h>
 #include <ifcpp/IFC4X3/include/IfcChimney.h>
@@ -44,12 +47,18 @@
 
 #include <IBK_Exception.h>
 #include <IBK_FileUtils.h>
+#include <IBK_StringUtils.h>
 
 #include <tinyxml.h>
 
 //#include "IFCC_MeshUtils.h"
 #include "IFCC_Logger.h"
+#include "IFCC_RoomHealer.h"
 #include "IFCC_ProgressHandler.h"
+#include "IFCC_CSG_Adapter.h"
+#include "IFCC_GeometrySettings.h"
+#include "IFCC_RepresentationHelper.h"
+#include "IFCC_Opening.h"
 
 namespace IFCC {
 
@@ -126,6 +135,7 @@ void IFCReader::clearConvertData() {
 	m_openings.clear();
 	m_database.clear();
 	m_instances.clear();
+	m_ifcModel.m_objects.clear();
 }
 
 bool IFCReader::loadModelFromSTEPFile( const IBK::Path& filePath, shared_ptr<BuildingModel>& targetModel ) {
@@ -178,8 +188,16 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 
 	m_filename = filename;
 	m_readCompletedSuccessfully = true;
+
+	// Map ReaderSTEP's [0,1] parse progress into [0.01, 0.99] of the parent so
+	// messageTarget() relays progress events from the parser (which fires every
+	// few percent during the STEP load).
+	ProgressHandler readProgress = makeSubRange(notify, 0.01, 0.99);
+	m_currentSubProgress = &readProgress;
+
 	try {
 		bool res = loadModelFromSTEPFile(m_filename, m_geometryConverter.getBuildingModel());
+		m_currentSubProgress = nullptr;
 		if(!ignoreReadError && !res) {
 			m_readCompletedSuccessfully = false;
 			Logger::instance() << "loadModelFromSTEPFile returned false; errorText=" << m_errorText;
@@ -191,6 +209,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 		return !m_hasError;
 	}
 	catch (std::exception& e) {
+		m_currentSubProgress = nullptr;
 		m_errorText = e.what();
 		Logger::instance() << "read exception: " << e.what();
 		if(!ignoreReadError) {
@@ -222,6 +241,9 @@ void IFCReader::splitShapeData() {
 			}
 			else if(dynamic_pointer_cast<IfcChimney>(od) != nullptr) {
 				m_elementEntitesShape[BET_Chimney].push_back(data);
+			}
+			else if(dynamic_pointer_cast<IfcColumn>(od) != nullptr) {
+				m_elementEntitesShape[BET_Column].push_back(data);
 			}
 			else if(dynamic_pointer_cast<IfcCovering>(od) != nullptr) {
 				m_elementEntitesShape[BET_Covering].push_back(data);
@@ -357,6 +379,14 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 	size_t setFailConstr = 0, setFailSimilar = 0, setFailOpening = 0;
 	size_t noSurfConstr = 0, noSurfSimilar = 0, noSurfOpening = 0;
 
+	// Length factor for converting project units into [m]. Needed for
+	// IfcMaterialLayer thicknesses, which are NOT converted by the geometry
+	// pipeline — mm-based files (e.g. LENGTHUNIT .MILLI.) otherwise produce
+	// wall thicknesses of 300 m and break all distance-based matching.
+	double lengthFactor = 1.0;
+	if(m_geometryConverter.getBuildingModel() && m_geometryConverter.getBuildingModel()->getUnitConverter())
+		lengthFactor = m_geometryConverter.getBuildingModel()->getUnitConverter()->getLengthInMeterFactor();
+
 	m_buildingElements.clear();
 	for(auto& elems : m_elementEntitesShape) {
 		for(auto& elem : elems.second) {
@@ -372,7 +402,7 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 
 			if(isConstructionType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first)) {
+				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailConstr;
 					Logger::instance() << "set() FAILED constr type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
@@ -395,7 +425,7 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 			}
 			else if(isConstructionSimilarType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first)) {
+				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailSimilar;
 					Logger::instance() << "set() FAILED similar type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
@@ -417,7 +447,7 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 			}
 			else if(isOpeningType(elems.first)) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-				if(!bElem->set(e, elems.first)) {
+				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailOpening;
 					Logger::instance() << "set() FAILED opening type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
@@ -438,16 +468,27 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				}
 			}
 			else {
-	// 			std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
-	// 			if(!bElem->set(e, elems.first))
-	// 				continue;
+				// All remaining element classes (stairs, railings, ramps, furniture,
+				// distribution/transport elements, element components, feature elements,
+				// BET_All catch-all, ...) become m_otherElements so the VicIFC 3D model
+				// contains every IFC class with geometry. They are NOT construction
+				// elements — the matcher and the opening search ignore them.
+				// IfcOpeningElement voids are excluded: they are cut geometry, not
+				// visible objects (handled via m_openingsShape).
+				if(dynamic_pointer_cast<IfcOpeningElement>(e) != nullptr)
+					continue;
 
-	// 			m_buildingElements.m_otherElements.push_back(bElem);
-	// 			BuildingElement& currbElem = *m_buildingElements.m_otherElements.back();
+				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
+				if(!bElem->set(e, elems.first, lengthFactor))
+					continue;
 
-	// 			Logger::instance() << "update other " << currCount << " of " << elemCount;
+				m_buildingElements.m_otherElements.push_back(bElem);
+				BuildingElement& currbElem = *m_buildingElements.m_otherElements.back();
 
-	// 			currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
+				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
+				if(currbElem.surfaces().empty()) {
+					m_buildingElements.m_elementsWithoutSurfaces.push_back(m_buildingElements.m_otherElements.back());
+				}
 			}
 		}
 	}
@@ -458,6 +499,216 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 					   << " ; no-surface constr=" << noSurfConstr
 					   << " similar=" << noSurfSimilar
 					   << " opening=" << noSurfOpening;
+}
+
+namespace {
+
+/*! Render a single IFC property value as a string. */
+std::string propertyValueString(const Property& prop) {
+	switch(prop.m_valueType) {
+		case Property::VT_String:	return prop.m_stringValue;
+		case Property::VT_Double:	return IBK::val2string(prop.m_doubleValue);
+		case Property::VT_Boolean:	return prop.m_boolValue ? "true" : "false";
+		case Property::VT_INT:		return IBK::val2string(prop.m_intValue);
+		case Property::VT_Bounded:	return IBK::val2string(prop.m_boundedValue.m_setPoint);
+		default:					return std::string();
+	}
+}
+
+} // anonymous namespace
+
+void IFCReader::buildIFCModel() {
+	m_ifcModel.m_objects.clear();
+
+	// gather all building elements (spaces are handled separately and excluded here)
+	std::vector<std::shared_ptr<BuildingElement> > allElements;
+	auto addAll = [&allElements](const std::vector<std::shared_ptr<BuildingElement> >& v) {
+		allElements.insert(allElements.end(), v.begin(), v.end());
+	};
+	addAll(m_buildingElements.m_constructionElements);
+	addAll(m_buildingElements.m_constructionSimilarElements);
+	addAll(m_buildingElements.m_openingElements);
+	addAll(m_buildingElements.m_otherElements);
+	// elements without own geometry are still emitted (geometry-less) — layered walls are
+	// composite IfcWall objects whose parts (IfcBuildingElementPart) aggregate into them,
+	// so the composite is needed as topology parent in the navigation tree
+	addAll(m_buildingElements.m_elementsWithoutSurfaces);
+
+	// Lookup from opening id to its geometry: element surfaces carry no openings, so we
+	// project each construction element's contained openings onto its faces to cut holes.
+	std::map<int, const Opening*> openingById;
+	for(const Opening& op : m_openings)
+		openingById[op.m_id] = &op;
+
+	std::set<int> emittedIds;
+	for(const std::shared_ptr<BuildingElement>& elem : allElements) {
+		if(elem == nullptr)
+			continue;
+		if(!emittedIds.insert(elem->m_id).second)
+			continue;	// element listed in more than one collector bucket
+
+		VicIFC::IFCObject obj;
+		obj.m_id = (uint64_t)elem->m_id;
+		obj.m_guid = elem->m_guid;
+		obj.m_ifcType = !elem->m_ifcClassName.empty() ? elem->m_ifcClassName
+													  : objectTypeToString(elem->type());
+		obj.m_name = elem->m_name;
+		// original IFC appearance color (invalid QColor -> stays default in VicIFC::IFCObject)
+		if(elem->color().isValid())
+			obj.m_color = elem->color();
+
+		// Windows render semi-transparent (glass): keep the authored IFC transparency
+		// when present (alpha < 255 from IfcSurfaceStyleRendering), otherwise apply a
+		// default glass alpha so windows don't occlude the room behind them.
+		if(elem->type() == BET_Window) {
+			QColor c = elem->color().isValid() ? elem->color() : QColor(150, 195, 220);
+			if(c.alpha() == 255)
+				c.setAlpha(120);
+			obj.m_color = c;
+		}
+
+		// Build the triangle mesh from the element faces with the contained window/door
+		// openings cut out as holes (cheap 2D triangulation-with-holes; no 3D CSG, which
+		// carve skips on the large (>2000-vertex) wall meshes of real buildings).
+		// Elements without geometry are kept as geometry-less structure nodes — they can
+		// be topology parents of aggregated parts (layered walls).
+		if(!elem->m_originalMesh.empty())
+			elem->appendMeshWithOpenings(openingById, m_convertOptions, obj.m_vertexes, obj.m_normals, obj.m_indices);
+
+		// flatten property sets into tags with key "<pset>.<property>"
+		for(const auto& psetPair : elem->propertyMap()) {
+			for(const auto& propPair : psetPair.second) {
+				VicIFC::Tag tag;
+				tag.m_key = psetPair.first + "." + propPair.first;
+				tag.m_value = propertyValueString(propPair.second);
+				obj.m_tags.push_back(tag);
+			}
+		}
+
+		m_ifcModel.m_objects.push_back(obj);
+	}
+
+	Logger::instance() << "buildIFCModel done; objects=" << m_ifcModel.m_objects.size();
+}
+
+
+void IFCReader::updateIFCModelTopology() {
+	// --- spatial topology: Site -> Building -> Storey -> Element ---
+	// Called AFTER updateStoreys (m_site is populated only then; buildIFCModel itself must
+	// run earlier, while the element meshes are still unmodified). Emits one geometry-less
+	// IFCObject per spatial structure element so the navigation tree can show the IFC
+	// hierarchy; elements reference their storey (or containing wall, for windows/doors)
+	// via m_parentId.
+
+	// element GUID -> spatial structure GUID from IfcRelContainedInSpatialStructure,
+	// and part GUID -> parent element GUID from IfcRelAggregates (building element
+	// parts, e.g. wall layers, are aggregated into their element, not contained in a
+	// storey — without this WSHH-class models show thousands of parts as a flat list)
+	std::map<std::string, std::string> containedInGuid;
+	std::map<std::string, std::string> aggregatedInGuid;
+	const std::map<int, shared_ptr<BuildingEntity> >& mapEntities = m_model->getMapIfcEntities();
+	for(const auto& entPair : mapEntities) {
+		shared_ptr<IFC4X3::IfcRelContainedInSpatialStructure> rel =
+				dynamic_pointer_cast<IFC4X3::IfcRelContainedInSpatialStructure>(entPair.second);
+		if(rel != nullptr && rel->m_RelatingStructure != nullptr) {
+			std::string structGuid = guidFromObject(rel->m_RelatingStructure.get());
+			for(const auto& prod : rel->m_RelatedElements) {
+				if(prod != nullptr)
+					containedInGuid[guidFromObject(prod.get())] = structGuid;
+			}
+			continue;
+		}
+		shared_ptr<IFC4X3::IfcRelAggregates> agg =
+				dynamic_pointer_cast<IFC4X3::IfcRelAggregates>(entPair.second);
+		if(agg != nullptr && agg->m_RelatingObject != nullptr) {
+			std::string parentGuid = guidFromObject(agg->m_RelatingObject.get());
+			for(const auto& child : agg->m_RelatedObjects) {
+				if(child != nullptr)
+					aggregatedInGuid[guidFromObject(child.get())] = parentGuid;
+			}
+		}
+	}
+
+	// spatial structure GUID -> IFCObject id, filled while emitting site/buildings/storeys
+	std::map<std::string, uint64_t> spatialIdByGuid;
+	auto addSpatialObject = [this,&spatialIdByGuid](int id, const std::string& guid, const std::string& name,
+			const std::string& ifcType, uint64_t parentId) -> uint64_t {
+		VicIFC::IFCObject obj;
+		obj.m_id = (uint64_t)id;
+		obj.m_parentId = parentId;
+		obj.m_guid = guid;
+		obj.m_ifcType = ifcType;
+		obj.m_name = name.empty() ? ifcType : name;
+		m_ifcModel.m_objects.push_back(obj);
+		if(!guid.empty())
+			spatialIdByGuid[guid] = obj.m_id;
+		return obj.m_id;
+	};
+	const uint64_t siteObjId = addSpatialObject(m_site.m_id, m_site.m_guid, m_site.m_name,
+												"site", VicIFC::INVALID_ID_64);
+	for(const std::shared_ptr<Building>& building : m_site.m_buildings) {
+		if(building == nullptr)
+			continue;
+		const uint64_t buildingObjId = addSpatialObject(building->m_id, building->m_guid,
+														building->m_name, "building", siteObjId);
+		for(const std::shared_ptr<BuildingStorey>& storey : building->storeys()) {
+			if(storey == nullptr)
+				continue;
+			addSpatialObject(storey->m_id, storey->m_guid, storey->m_name, "storey", buildingObjId);
+		}
+	}
+
+	// fallback for windows/doors without own containment: parent = containing wall
+	std::map<uint64_t, uint64_t> openingElementParent;	// opening element id -> construction element id
+	for(const Opening& op : m_openings) {
+		std::vector<int> containing;
+		op.insertContainingElementId(containing);
+		if(containing.empty())
+			continue;
+		for(int oeId : op.openingElementIds())
+			openingElementParent[(uint64_t)oeId] = (uint64_t)containing.front();
+	}
+
+	// GUID -> object id over ALL emitted objects (needed for part -> parent element links)
+	std::map<std::string, uint64_t> objectIdByGuid;
+	for(const VicIFC::IFCObject& obj : m_ifcModel.m_objects) {
+		if(!obj.m_guid.empty())
+			objectIdByGuid[obj.m_guid] = obj.m_id;
+	}
+
+	int assigned = 0;
+	for(VicIFC::IFCObject& obj : m_ifcModel.m_objects) {
+		if(obj.m_parentId != VicIFC::INVALID_ID_64)
+			continue;	// spatial objects already carry their parent
+		// 1. storey containment
+		std::map<std::string, std::string>::const_iterator cit = containedInGuid.find(obj.m_guid);
+		if(cit != containedInGuid.end()) {
+			std::map<std::string, uint64_t>::const_iterator sit = spatialIdByGuid.find(cit->second);
+			if(sit != spatialIdByGuid.end() && sit->second != obj.m_id) {
+				obj.m_parentId = sit->second;
+				++assigned;
+				continue;
+			}
+		}
+		// 2. aggregation (building element parts -> their element)
+		std::map<std::string, std::string>::const_iterator ait = aggregatedInGuid.find(obj.m_guid);
+		if(ait != aggregatedInGuid.end()) {
+			std::map<std::string, uint64_t>::const_iterator oit = objectIdByGuid.find(ait->second);
+			if(oit != objectIdByGuid.end() && oit->second != obj.m_id) {
+				obj.m_parentId = oit->second;
+				++assigned;
+				continue;
+			}
+		}
+		// 3. windows/doors without own containment -> containing wall
+		std::map<uint64_t, uint64_t>::const_iterator pit = openingElementParent.find(obj.m_id);
+		if(pit != openingElementParent.end()) {
+			obj.m_parentId = pit->second;
+			++assigned;
+		}
+	}
+	Logger::instance() << "updateIFCModelTopology done; objects=" << m_ifcModel.m_objects.size()
+					   << " parentsAssigned=" << assigned;
 }
 
 const ConvertOptions &IFCReader::convertOptions() const {
@@ -576,7 +827,26 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 						   << " minimumSurfaceArea=" << m_convertOptions.m_minimumSurfaceArea;
 		m_geometryConverter.getGeomSettings()->setMinimumSurfaceArea(m_convertOptions.m_minimumSurfaceArea);
 		m_geometryConverter.setCsgEps(1.5e-08 * length_in_meter);
-		m_geometryConverter.convertGeometry(subtractOpenings, m_convertErrors);
+		{
+			// Relay GeometryConverter progress (StatusCallback PROGRESS_VALUE
+			// events emitted from thread 0 every ~2% of objects) to notify, so
+			// the GUI thread keeps running processEvents() during this long pass.
+			// Without the setMessageCallBack hookup the converter's progress
+			// events go nowhere and the dialog freezes at 5%.
+			ProgressHandler geomProgress = makeSubRange(notify, 0.05, 0.20);
+			m_currentSubProgress = &geomProgress;
+			m_geometryConverter.setMessageCallBack(this, &IFCReader::messageTarget);
+			try {
+				m_geometryConverter.convertGeometry(subtractOpenings, m_convertErrors);
+			}
+			catch(...) {
+				m_geometryConverter.unsetMessageCallBack();
+				m_currentSubProgress = nullptr;
+				throw;
+			}
+			m_geometryConverter.unsetMessageCallBack();
+			m_currentSubProgress = nullptr;
+		}
 		Logger::instance() << "convertGeometry done; convertErrors=" << m_convertErrors.size();
 
 		if(notify)
@@ -673,6 +943,11 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 			m_convertErrors.push_back({OT_BuildingElement, elem->m_id, "Building element has no surface"});
 		}
 
+		// build the raw IFC model (all building elements with their original mesh) while
+		// the element meshes are still available and unmodified
+		Logger::instance().beginStep("build-ifc-model");
+		buildIFCModel();
+
 		if(notify)
 			notify->notify(0.60, "Match openings");
 		Logger::instance().beginStep("match-openings");
@@ -740,6 +1015,9 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		}
 
 		Logger::instance() << "updateStoreys done; buildings=" << m_site.m_buildings.size();
+
+		// site/buildings/storeys exist now — attach the spatial hierarchy to the IFC model
+		updateIFCModelTopology();
 
 		if(m_repairFlags.m_removeDoubledSBs) {
 			Logger::instance().beginStep("remove-doubled-sbs");
@@ -990,6 +1268,43 @@ VICUS::Project IFCReader::buildVicusProject() const {
 		Logger::instance() << "shadingExport total shading objects added="
 						   << (project.m_shadingObjects.size() - shadingStart);
 	}
+
+	// Hand the raw IFC geometry over to VICUS: write the collected VicIFC model to a
+	// side-car .vicifc file next to the imported IFC file and reference it from a
+	// VICUS::IFCDrawing. The plugin interface only transfers the project as XML text,
+	// so the mesh travels as the .vicifc file that SIM-VICUS loads via IFCDrawing::m_filepath.
+	if(!m_ifcModel.m_objects.empty() && !m_filename.str().empty()) {
+		// Populate the object-id map first: nextUnusedID() reads m_objectPtr, which is only
+		// filled by updatePointers(). Without this the IFC nav-tree node ids start too low
+		// and collide with the shading-object / surface ids (Duplicate ID on load).
+		project.updatePointers();
+		unsigned int nextID = project.nextUnusedID();
+
+		VICUS::IFCDrawing drawing;
+		drawing.m_id = nextID++;
+		// copy the raw model into the drawing's PImpl wrapper (VicIFC::ModelForward)
+		*drawing.m_data = m_ifcModel;
+
+		// write the mesh to a side-car .vicifc file alongside the IFC source file
+		IBK::Path vicifcFile(m_filename.withoutExtension().str() + ".vicifc");
+		drawing.m_filepath = vicifcFile;
+		drawing.writeVicIFC(vicifcFile);
+
+		// create the nav-tree nodes for the individual IFC objects
+		drawing.syncObjectNodes(nextID);
+		drawing.updateParents();
+
+		project.m_ifc.m_id = nextID++;
+		project.m_ifc.m_drawings.push_back(drawing);
+
+		Logger::instance() << "IFC geometry handover: wrote " << vicifcFile.str()
+						   << " (" << m_ifcModel.m_objects.size() << " objects)";
+	}
+
+	// Structured room-geometry post-processing: drop duplicate surfaces, repair
+	// winding, close remaining shell holes (per-room safety net inside).
+	healRooms(project);
+
 	return project;
 }
 
@@ -1159,10 +1474,20 @@ const std::vector<ConvertError>& IFCReader::convertErrors() const {
 }
 
 void IFCReader::messageTarget( void* ptr, shared_ptr<StatusCallback::Message> m ) {
-	if(ptr == nullptr)
+	if(ptr == nullptr || !m)
 		return;
 
 	IFCReader* myself = reinterpret_cast<IFCReader*>(ptr);
+
+	// Relay progress events to the active sub-range handler so the GUI keeps
+	// pumping events during long ifcplusplus passes (STEP parsing, geometry
+	// conversion). Without this, those phases run without any notify callback
+	// and the progress dialog freezes (e.g. stuck at 5% "Convert geometry").
+	if(m->m_message_type == StatusCallback::MESSAGE_TYPE_PROGRESS_VALUE) {
+		if(myself->m_currentSubProgress != nullptr && m->m_progress_value >= 0.0)
+			myself->m_currentSubProgress->notify(m->m_progress_value);
+		return;
+	}
 
 	std::string reporting_function_str( m->m_reporting_function );
 	std::string position;
@@ -1212,6 +1537,35 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 	size_t distTooFar = 0;         // unmatched AND best parallel-plane distance > openingDistance
 	size_t notIntersected = 0;     // unmatched AND a parallel candidate existed within distance but none intersected
 	size_t processed = 0;          // for progress notification
+
+	// Precompute one AABB per candidate window/door element BEFORE the parallel loop
+	// (also avoids concurrent lazy-init of the Surface AABB caches). Composite
+	// elements without own body (WSHH windows: IfcWindow aggregating Aluminium/
+	// Normalglas parts) get their AABB from the aggregated part geometry.
+	std::map<int, std::pair<IBKMK::Vector3D, IBKMK::Vector3D>> elementAabbs;
+	for(const auto& elem : m_buildingElements.m_openingElements) {
+		IBKMK::Vector3D emin(1e20,1e20,1e20), emax(-1e20,-1e20,-1e20);
+		bool any = false;
+		auto expand = [&](const std::vector<Surface>& surfs) {
+			for(const Surface& s : surfs) {
+				const IBKMK::Vector3D& a = s.aabbMin();
+				const IBKMK::Vector3D& b = s.aabbMax();
+				emin.m_x = std::min(emin.m_x, a.m_x); emin.m_y = std::min(emin.m_y, a.m_y); emin.m_z = std::min(emin.m_z, a.m_z);
+				emax.m_x = std::max(emax.m_x, b.m_x); emax.m_y = std::max(emax.m_y, b.m_y); emax.m_z = std::max(emax.m_z, b.m_z);
+				any = true;
+			}
+		};
+		expand(elem->surfaces());
+		for(const auto& part : elem->elementParts()) {
+			if(!part)
+				continue;
+			std::shared_ptr<BuildingElement> partElem = m_buildingElements.fromGUID(guidFromObject(part.get()));
+			if(partElem)
+				expand(partElem->surfaces());
+		}
+		if(any)
+			elementAabbs[elem->m_id] = {emin, emax};
+	}
 
 	// Each iteration only mutates the current Opening (addOpeningElementId), shared
 	// data (m_buildingElements.m_openingElements, m_convertOptions) is read-only.
@@ -1286,6 +1640,51 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 
 		} // building element id loop
 
+		if(constructionId == -1) {
+			// AABB containment fallback. Arched/curved opening bodies (revolved solids,
+			// e.g. WSHH round-arch windows) have no planar face parallel to the window
+			// element, so the per-face tests above fail even though the window sits
+			// geometrically inside the opening. Match by axis-aligned bounding boxes:
+			// accept the element whose AABB overlaps the opening AABB the most,
+			// requiring at least half of the element volume inside.
+			IBKMK::Vector3D omin(1e20,1e20,1e20), omax(-1e20,-1e20,-1e20);
+			for(const Surface& os : opening.surfaces()) {
+				const IBKMK::Vector3D& a = os.aabbMin();
+				const IBKMK::Vector3D& b = os.aabbMax();
+				omin.m_x = std::min(omin.m_x, a.m_x); omin.m_y = std::min(omin.m_y, a.m_y); omin.m_z = std::min(omin.m_z, a.m_z);
+				omax.m_x = std::max(omax.m_x, b.m_x); omax.m_y = std::max(omax.m_y, b.m_y); omax.m_z = std::max(omax.m_z, b.m_z);
+			}
+			double bestScore = 0.0;
+			int bestId = -1;
+			for(const auto& ea : elementAabbs) {
+				const IBKMK::Vector3D& emin = ea.second.first;
+				const IBKMK::Vector3D& emax = ea.second.second;
+				double ox = std::min(omax.m_x, emax.m_x) - std::max(omin.m_x, emin.m_x);
+				double oy = std::min(omax.m_y, emax.m_y) - std::max(omin.m_y, emin.m_y);
+				double oz = std::min(omax.m_z, emax.m_z) - std::max(omin.m_z, emin.m_z);
+				if(ox <= 0.0 || oy <= 0.0 || oz <= 0.0)
+					continue;
+				double ex = std::max(1e-4, emax.m_x - emin.m_x);
+				double ey = std::max(1e-4, emax.m_y - emin.m_y);
+				double ez = std::max(1e-4, emax.m_z - emin.m_z);
+				double score = (ox*oy*oz) / (ex*ey*ez);
+				if(score > bestScore) {
+					bestScore = score;
+					bestId = ea.first;
+				}
+			}
+			if(bestScore >= 0.5) {
+				constructionId = bestId;
+				#pragma omp critical(ifcc_logger)
+				{
+					Logger::instance() << "opening matched by AABB containment; id=" << opening.m_id
+									   << " name='" << opening.m_name << "'"
+									   << " elementId=" << bestId
+									   << " overlapRatio=" << bestScore;
+				}
+			}
+		}
+
 		if(constructionId > -1) {
 			opening.addOpeningElementId(constructionId);
 			++matched;
@@ -1305,6 +1704,34 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 				reason = "parallel-in-range-but-no-intersection";
 				++notIntersected;
 			}
+			// Recompute the best AABB score purely for diagnostics (the fallback above
+			// already rejected it as < 0.5) — tells us whether the element geometry is
+			// missing entirely (score 0) or the boxes merely overlap too little.
+			double dbgBestScore = 0.0;
+			int dbgBestId = -1;
+			{
+				IBKMK::Vector3D omin2(1e20,1e20,1e20), omax2(-1e20,-1e20,-1e20);
+				for(const Surface& os : opening.surfaces()) {
+					const IBKMK::Vector3D& a = os.aabbMin();
+					const IBKMK::Vector3D& b = os.aabbMax();
+					omin2.m_x = std::min(omin2.m_x, a.m_x); omin2.m_y = std::min(omin2.m_y, a.m_y); omin2.m_z = std::min(omin2.m_z, a.m_z);
+					omax2.m_x = std::max(omax2.m_x, b.m_x); omax2.m_y = std::max(omax2.m_y, b.m_y); omax2.m_z = std::max(omax2.m_z, b.m_z);
+				}
+				for(const auto& ea : elementAabbs) {
+					const IBKMK::Vector3D& emin = ea.second.first;
+					const IBKMK::Vector3D& emax = ea.second.second;
+					double ox = std::min(omax2.m_x, emax.m_x) - std::max(omin2.m_x, emin.m_x);
+					double oy = std::min(omax2.m_y, emax.m_y) - std::max(omin2.m_y, emin.m_y);
+					double oz = std::min(omax2.m_z, emax.m_z) - std::max(omin2.m_z, emin.m_z);
+					if(ox <= 0.0 || oy <= 0.0 || oz <= 0.0)
+						continue;
+					double ex = std::max(1e-4, emax.m_x - emin.m_x);
+					double ey = std::max(1e-4, emax.m_y - emin.m_y);
+					double ez = std::max(1e-4, emax.m_z - emin.m_z);
+					double score = (ox*oy*oz) / (ex*ey*ez);
+					if(score > dbgBestScore) { dbgBestScore = score; dbgBestId = ea.first; }
+				}
+			}
 			#pragma omp critical(ifcc_logger)
 			{
 				Logger::instance() << "unmatched opening id=" << opening.m_id
@@ -1312,7 +1739,9 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 								   << " name='" << opening.m_name << "'"
 								   << " surfaces=" << opening.surfaces().size()
 								   << " bestParallelDist=" << bestParallelDist
-								   << " reason=" << reason;
+								   << " reason=" << reason
+								   << " bestAabbScore=" << dbgBestScore
+								   << " bestAabbElemId=" << dbgBestId;
 			}
 		}
 	} // opening loop

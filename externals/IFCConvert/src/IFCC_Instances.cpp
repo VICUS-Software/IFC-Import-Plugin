@@ -345,6 +345,22 @@ void Instances::addToVicusProject(VICUS::Project* project, const Database& datab
 			continue;
 		}
 		VICUS::SubSurfaceComponentInstance vsci = sci.second.getVicusSubSurfaceComponentInstance(idMap);
+		// Propagate the component type (window/door). Without it the instance keeps
+		// its CT_Miscellaneous default and windows render opaque in wall color —
+		// visually "the wall got a subsurface but no window".
+		auto scit = database.m_subSurfaceComponents.find(sci.second.componentId());
+		if(scit != database.m_subSurfaceComponents.end()) {
+			switch(scit->second.typeValue()) {
+				case SubSurfaceComponent::CT_Window:
+					vsci.m_type = VICUS::SubSurfaceComponentInstance::CT_Window;
+					break;
+				case SubSurfaceComponent::CT_Door:
+					vsci.m_type = VICUS::SubSurfaceComponentInstance::CT_Door;
+					break;
+				default:
+					break;
+			}
+		}
 		project->m_subSurfaceComponentInstances.push_back(vsci);
 	}
 

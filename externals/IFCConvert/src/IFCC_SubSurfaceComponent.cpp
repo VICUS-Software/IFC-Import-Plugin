@@ -38,30 +38,6 @@ void SubSurfaceComponent::setOther(int id) {
 	m_constructionId = id;
 }
 
-VICUS::SubSurfaceComponent SubSurfaceComponent::getVicusObject(std::map<int,int>& idMap, int idOffset) const {
-	VICUS::SubSurfaceComponent vssc;
-	vssc.m_id = m_id + idOffset;
-	idMap[m_id] = vssc.m_id;
-	vssc.m_displayName.setString(m_name,"de");
-	vssc.m_type = static_cast<VICUS::SubSurfaceComponent::SubSurfaceComponentType>(m_type);
-	if(m_windowId != -1) {
-		auto fit = idMap.find(m_windowId);
-		if(fit != idMap.end())
-			vssc.m_idWindow = fit->second;
-	}
-	if(m_constructionId != -1) {
-		auto fit = idMap.find(m_constructionId);
-		if(fit != idMap.end())
-			vssc.m_idConstruction = fit->second;
-	}
-	if(!m_color.empty()) {
-		QColor c(QString::fromStdString(m_color));
-		if(c.isValid())
-			vssc.m_color = c;
-	}
-	return vssc;
-}
-
 TiXmlElement * SubSurfaceComponent::writeXML(TiXmlElement * parent) const {
 	TiXmlElement * e = new TiXmlElement("SubSurfaceComponent");
 	parent->LinkEndChild(e);

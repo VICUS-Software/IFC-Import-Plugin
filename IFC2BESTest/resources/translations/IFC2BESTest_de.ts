@@ -48,5 +48,43 @@
         <source>Save</source>
         <translation>Speichern</translation>
     </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="110"/>
+        <source>Specify SIM-VICUS project file</source>
+        <translation>SIM-VICUS-Projektdatei angeben</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="112"/>
+        <location filename="../../src/mainwindow.cpp" line="224"/>
+        <source>SIM-VICUS project file (*.vicus);;All files (*.*)</source>
+        <translation>SIM-VICUS-Projektdatei (*.vicus);;Alle Dateien (*.*)</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="161"/>
+        <location filename="../../src/mainwindow.cpp" line="167"/>
+        <source>Loader failed</source>
+        <translation>Laden fehlgeschlagen</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="223"/>
+        <source>Open vicus file</source>
+        <translation>VICUS-Datei öffnen</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="229"/>
+        <location filename="../../src/mainwindow.cpp" line="236"/>
+        <source>File error</source>
+        <translation>Dateifehler</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="229"/>
+        <source>Error while open file &apos;%1&apos;</source>
+        <translation>Fehler beim Öffnen der Datei '%1'</translation>
+    </message>
+    <message>
+        <location filename="../../src/mainwindow.cpp" line="236"/>
+        <source>Error while read file &apos;%1&apos;</source>
+        <translation>Fehler beim Lesen der Datei '%1'</translation>
+    </message>
 </context>
 </TS>

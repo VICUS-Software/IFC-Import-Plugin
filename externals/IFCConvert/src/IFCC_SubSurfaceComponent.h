@@ -7,7 +7,10 @@
 
 #include <tinyxml.h>
 
-#include <VICUS_SubSurfaceComponent.h>
+// VICUS::SubSurfaceComponent has been removed in the new SIM-VICUS API
+// (component layer flattened — SubSurfaceComponentInstance now references a
+// Construction/Window directly via m_idConstruction). This class is now an
+// importer-internal staging structure only and no longer maps to a VICUS type.
 
 namespace IFCC {
 
@@ -82,10 +85,13 @@ public:
 	/*! Write the component in vicus xml format.*/
 	TiXmlElement * writeXML(TiXmlElement * parent) const;
 
-	/*! Create a VICUS sub-surface component object and return this.
-		The returned object contains all transferable data.
-	*/
-	VICUS::SubSurfaceComponent getVicusObject(std::map<int,int>& idMap, int idOffset) const;
+	/*! Window-construction ID set via setWindow(). Returns -1 if this component
+		does not represent a window (use constructionId() for doors/misc). */
+	int windowId() const { return m_windowId; }
+
+	/*! Construction ID set via setDoor()/setOther(). Returns -1 for windows
+		(use windowId() instead). */
+	int constructionId() const { return m_constructionId; }
 
 	/*! Comparison operator.*/
 	friend bool operator==(const SubSurfaceComponent& left, const SubSurfaceComponent& right) {

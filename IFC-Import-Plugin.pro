@@ -18,6 +18,7 @@ SUBDIRS += ImportIFCPlugin \
 	Nandrad \
 	Vicus \
 	VicOSM \
+	VicIFC \
 	CCM \
 	glm \
 	DataIO \
@@ -37,6 +38,7 @@ Nandrad.file = externals/Nandrad/Nandrad.pro
 NandradFMUGenerator.file = externals/NandradFMUGenerator/NandradFMUGenerator.pro
 Vicus.file = externals/Vicus/Vicus.pro
 VicOSM.file = externals/VicOSM/VicOSM.pro
+VicIFC.file = externals/VicIFC/VicIFC.pro
 Carve.file = externals/ifcplusplus/src/IfcPlusPlus/src/external/Carve/projects/Qt/Carve.pro
 Clipper.file = externals/clipper/clipper.pro
 IBK.file = externals/IBK/IBK.pro
@@ -54,11 +56,12 @@ CCM.depends = IBK TiCPP
 DataIO.depends = IBK
 QtExt.depends = IBK
 Nandrad.depends = IBK TiCPP IBKMK
-Vicus.depends = IBK TiCPP Nandrad IBKMK CCM glm VicOSM Clipper QuaZIP NandradFMUGenerator
+Vicus.depends = IBK TiCPP Nandrad IBKMK CCM glm VicOSM VicIFC Clipper QuaZIP NandradFMUGenerator
 VicOSM.depends = IBK Clipper TiCPP IBKMK Nandrad
+VicIFC.depends = IBK IBKMK TiCPP Nandrad
 ImportIFCPlugin.depends = IBK IBKMK TiCPP QtExt Carve Clipper IFCConvert
 #GEGExportPlugin.depends = IBK IBKMK TiCPP QtExt Nandrad Vicus CCM DataIO
-IFCConvert.depends = IBK IBKMK TiCPP Carve Clipper Vicus
+IFCConvert.depends = IBK IBKMK TiCPP Carve Clipper Vicus VicOSM VicIFC glm
 IBKMK.depends = IBK
 
 linux-g++ | linux-g++-64 | linux-g++-32 {

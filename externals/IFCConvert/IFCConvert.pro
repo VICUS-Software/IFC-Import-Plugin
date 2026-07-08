@@ -29,7 +29,7 @@ QT       += core gui widgets
 # like version number etc., we also may reset all
 #
 
-LIBS += -lIBK -lTiCPP -lclipper -lNandrad -lIBKMK -lVicus -lglm -lVicOSM
+LIBS += -lIBK -lTiCPP -lclipper -lNandrad -lIBKMK -lVicus -lglm -lVicOSM -lVicIFC
 
 # ifcplusplus headers include glm the upstream way (<glm/glm.hpp>), which needs a
 # "glm/" prefix directory. Our glm lib keeps its headers flat under glm/src, so the
@@ -51,6 +51,7 @@ INCLUDEPATH += \
 		../TiCPP/src \
 		../Vicus/src \
 		../VicOSM/src \
+		../VicIFC/src \
 		../glm-compat \
 		../glm/src \
 		../ifcplusplus/src/IfcPlusPlus/src/external/Carve/src/include \

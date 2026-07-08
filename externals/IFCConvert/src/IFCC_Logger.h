@@ -5,12 +5,22 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <string>
 
 namespace IFCC {
 
 class Logger;
+
+/*! Serializes concurrent log-line flushes. Logger is used from inside OMP
+	parallel regions (per-space matching, shell anchoring) — unsynchronized
+	writes to the shared ofstreams are undefined behaviour and caused sporadic
+	crashes that vanished under gdb. */
+inline std::mutex& logFlushMutex() {
+	static std::mutex m;
+	return m;
+}
 
 /*! Accumulates a single log line across chained operator<< calls.
 	The line is flushed (with timestamp) on destruction — typically at the
@@ -34,6 +44,7 @@ public:
 		if(!m_active)
 			return;
 		std::string line = "[" + m_ts + "] " + m_buf.str();
+		std::lock_guard<std::mutex> lock(logFlushMutex());
 		if(m_main)
 			*m_main << line << std::endl;
 		if(m_step)

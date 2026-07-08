@@ -5,6 +5,7 @@
 #include <carve/mesh.hpp>
 #include <carve/matrix.hpp>
 
+#include <ifcpp/IFC4X3/EntityFactory.h>
 #include <ifcpp/IFC4X3/include/IfcRelVoidsElement.h>
 #include <ifcpp/IFC4X3/include/IfcGloballyUniqueId.h>
 #include <ifcpp/IFC4X3/include/IfcObjectTypeEnum.h>
@@ -62,6 +63,7 @@
 #include <Carve/src/include/carve/carve.hpp>
 
 #include <sstream>
+#include <cmath>
 
 #include <IBKMK_Polygon3D.h>
 #include <IBKMK_Polygon2D.h>
@@ -77,6 +79,7 @@
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
 #include "IFCC_Logger.h"
+#include "IFCC_PolygonRoundTripCheck.h"
 #include "IFCC_RepresentationHelper.h"
 #include "IFCC_CSG_Adapter.h"
 
@@ -100,12 +103,14 @@ BuildingElement::BuildingElement(int id) :
 
 }
 
-bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, BuildingElementTypes type) {
+bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, BuildingElementTypes type, double lengthFactor) {
 	if(!EntityBase::set(dynamic_pointer_cast<IFC4X3::IfcRoot>(ifcElement)))
 		return false;
 
 	m_type = type;
 	m_name = label2s(ifcElement->m_Name);
+	if(const char* cn = IFC4X3::EntityFactory::getStringForClassID(ifcElement->classID()))
+		m_ifcClassName = cn;
 	for(const auto& relop : ifcElement->m_HasOpenings_inverse) {
 		if(relop.lock()->m_RelatedOpeningElement)
 			m_containedOpeningsOriginal.push_back(relop.lock()->m_RelatedOpeningElement);
@@ -156,9 +161,9 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 				if(window->m_PredefinedType != nullptr)
 					m_openingProperties.m_windowType = window->m_PredefinedType->m_enum;
 				if(window->m_OverallHeight != nullptr)
-					m_openingProperties.m_windowHeight = window->m_OverallHeight->m_value;
+					m_openingProperties.m_windowHeight = window->m_OverallHeight->m_value * lengthFactor;
 				if(window->m_OverallWidth != nullptr)
-					m_openingProperties.m_windowWidth = window->m_OverallWidth->m_value;
+					m_openingProperties.m_windowWidth = window->m_OverallWidth->m_value * lengthFactor;
 				if(window->m_PartitioningType != nullptr)
 					m_openingProperties.m_windowPartitionType = window->m_PartitioningType->m_enum;
 				m_openingProperties.m_windowUserDefinedPartitionType = label2s(window->m_UserDefinedPartitioningType);
@@ -214,9 +219,9 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 				if(door->m_PredefinedType != nullptr)
 					m_openingProperties.m_doorType = door->m_PredefinedType->m_enum;
 				if(door->m_OverallHeight != nullptr)
-					m_openingProperties.m_doorHeight = door->m_OverallHeight->m_value;
+					m_openingProperties.m_doorHeight = door->m_OverallHeight->m_value * lengthFactor;
 				if(door->m_OverallWidth != nullptr)
-					m_openingProperties.m_doorWidth = door->m_OverallWidth->m_value;
+					m_openingProperties.m_doorWidth = door->m_OverallWidth->m_value * lengthFactor;
 				if(door->m_OperationType != nullptr)
 					m_openingProperties.m_doorOperationType = door->m_OperationType->m_enum;
 				for(const auto& reltypes : ifcElement->m_IsTypedBy_inverse) {
@@ -233,36 +238,41 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 	if(m_type == BET_Wall) {
 		shared_ptr<IFC4X3::IfcWall> wall = dynamic_pointer_cast<IFC4X3::IfcWall>(ifcElement);
 		m_wallProperties.update(wall);
+	}
 
-		if(!wall->m_IsDecomposedBy_inverse.empty()) {
-			for(size_t i=0; i<wall->m_IsDecomposedBy_inverse.size(); ++i) {
-				shared_ptr<IFC4X3::IfcRelAggregates> relAggregate(wall->m_IsDecomposedBy_inverse[i]);
-				if(relAggregate) {
-					for(size_t io=0; io<relAggregate->m_RelatedObjects.size(); ++io) {
-						const shared_ptr<IFC4X3::IfcObjectDefinition>& object = relAggregate->m_RelatedObjects[io];
-						shared_ptr<IFC4X3::IfcElementComponent> comp = dynamic_pointer_cast<IFC4X3::IfcElementComponent>(object);
-						shared_ptr<IFC4X3::IfcBuildingElementPart> part = dynamic_pointer_cast<IFC4X3::IfcBuildingElementPart>(comp);
-						if(part) {
-							m_hasElementParts.push_back(part);
-						}
-
+	// Collect aggregated IfcBuildingElementPart children for ALL element types.
+	// Not only layered walls are composites — WSHH windows/doors are IfcWindow
+	// objects without own body whose geometry lives in parts (Aluminium/Normalglas).
+	// The opening-to-element AABB matching and the part-aware space boundary
+	// matching both need this relation.
+	if(!ifcElement->m_IsDecomposedBy_inverse.empty()) {
+		for(size_t i=0; i<ifcElement->m_IsDecomposedBy_inverse.size(); ++i) {
+			shared_ptr<IFC4X3::IfcRelAggregates> relAggregate(ifcElement->m_IsDecomposedBy_inverse[i]);
+			if(relAggregate) {
+				for(size_t io=0; io<relAggregate->m_RelatedObjects.size(); ++io) {
+					const shared_ptr<IFC4X3::IfcObjectDefinition>& object = relAggregate->m_RelatedObjects[io];
+					shared_ptr<IFC4X3::IfcElementComponent> comp = dynamic_pointer_cast<IFC4X3::IfcElementComponent>(object);
+					shared_ptr<IFC4X3::IfcBuildingElementPart> part = dynamic_pointer_cast<IFC4X3::IfcBuildingElementPart>(comp);
+					if(part) {
+						m_hasElementParts.push_back(part);
 					}
+
 				}
 			}
 		}
-		if(!wall->m_Decomposes_inverse.empty()) {
-			for(size_t i=0; i<wall->m_Decomposes_inverse.size(); ++i) {
-				shared_ptr<IFC4X3::IfcRelAggregates> relAggregate(wall->m_Decomposes_inverse[i]);
-				if(relAggregate) {
-					for(size_t io=0; io<relAggregate->m_RelatedObjects.size(); ++io) {
-						const shared_ptr<IFC4X3::IfcObjectDefinition>& object = relAggregate->m_RelatedObjects[io];
-						shared_ptr<IFC4X3::IfcElementComponent> comp = dynamic_pointer_cast<IFC4X3::IfcElementComponent>(object);
-						const shared_ptr<IFC4X3::IfcBuildingElementPart>& part = dynamic_pointer_cast<IFC4X3::IfcBuildingElementPart>(comp);
-						if(part) {
-							m_hasElementParts.push_back(part);
-						}
-
+	}
+	if(!ifcElement->m_Decomposes_inverse.empty()) {
+		for(size_t i=0; i<ifcElement->m_Decomposes_inverse.size(); ++i) {
+			shared_ptr<IFC4X3::IfcRelAggregates> relAggregate(ifcElement->m_Decomposes_inverse[i]);
+			if(relAggregate) {
+				for(size_t io=0; io<relAggregate->m_RelatedObjects.size(); ++io) {
+					const shared_ptr<IFC4X3::IfcObjectDefinition>& object = relAggregate->m_RelatedObjects[io];
+					shared_ptr<IFC4X3::IfcElementComponent> comp = dynamic_pointer_cast<IFC4X3::IfcElementComponent>(object);
+					const shared_ptr<IFC4X3::IfcBuildingElementPart>& part = dynamic_pointer_cast<IFC4X3::IfcBuildingElementPart>(comp);
+					if(part) {
+						m_hasElementParts.push_back(part);
 					}
+
 				}
 			}
 		}
@@ -296,7 +306,8 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 				if (matLayer) {
 					const shared_ptr<IFC4X3::IfcMaterial>& mat = matLayer->m_Material;					//optional
 					if (mat) {
-						m_materialLayers.emplace_back(std::pair<double,std::string>(matLayer->m_LayerThickness->m_value, label2s(mat->m_Name)));
+						// IfcMaterialLayer thickness is stored in project length units — convert to [m]
+					m_materialLayers.emplace_back(std::pair<double,std::string>(matLayer->m_LayerThickness->m_value * lengthFactor, label2s(mat->m_Name)));
 						m_materialPropertyMap.emplace_back(std::map<std::string,std::map<std::string,Property>>());
 						getMaterialProperties(mat, m_materialPropertyMap.back());
 					}
@@ -326,7 +337,8 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 						if (material_layer) {
 							const shared_ptr<IFC4X3::IfcMaterial>& mat = material_layer->m_Material;					//optional
 							if (mat) {
-								m_materialLayers.emplace_back(std::pair<double,std::string>(material_layer->m_LayerThickness->m_value, label2s(mat->m_Name)));
+								// IfcMaterialLayer thickness is stored in project length units — convert to [m]
+							m_materialLayers.emplace_back(std::pair<double,std::string>(material_layer->m_LayerThickness->m_value * lengthFactor, label2s(mat->m_Name)));
 								m_materialPropertyMap.emplace_back(std::map<std::string,std::map<std::string,Property>>());
 								getMaterialProperties(mat, m_materialPropertyMap.back());
 							}
@@ -341,10 +353,68 @@ bool BuildingElement::set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, Buildi
 	return true;
 }
 
+namespace {
+
+/*! Returns the first usable diffuse color from the product shape's appearance data,
+	searching product level first, then representation and item level. Returns an
+	invalid QColor if the IFC model carries no color. */
+QColor firstAppearanceColor(const std::shared_ptr<ProductShapeData>& productShape) {
+	if(productShape == nullptr)
+		return QColor();
+
+	auto pick = [](const std::vector<shared_ptr<AppearanceData> >& apps) -> QColor {
+		for(const shared_ptr<AppearanceData>& a : apps) {
+			if(!a)
+				continue;
+			const float r = a->m_color_diffuse.r();
+			const float g = a->m_color_diffuse.g();
+			const float b = a->m_color_diffuse.b();
+			const float al = a->m_color_diffuse.a();
+			// skip uninitialised (all-zero rgb) appearance entries
+			if(r == 0.f && g == 0.f && b == 0.f)
+				continue;
+			return QColor::fromRgbF(qBound(0.f, r, 1.f), qBound(0.f, g, 1.f),
+									qBound(0.f, b, 1.f), al <= 0.f ? 1.f : qBound(0.f, al, 1.f));
+		}
+		return QColor();
+	};
+
+	QColor col = pick(productShape->getAppearances());
+	if(col.isValid())
+		return col;
+	for(const shared_ptr<RepresentationData>& rep : productShape->m_vec_representations) {
+		if(!rep)
+			continue;
+		col = pick(rep->m_vec_representation_appearances);
+		if(col.isValid())
+			return col;
+		for(const shared_ptr<ItemShapeData>& item : rep->m_vec_item_data) {
+			if(!item)
+				continue;
+			col = pick(item->m_vec_item_appearances);
+			if(col.isValid())
+				return col;
+		}
+	}
+	return QColor();
+}
+
+} // anonymous namespace
+
 void BuildingElement::update(std::shared_ptr<ProductShapeData> productShape, std::vector<Opening>& openings, std::vector<ConvertError>& errors, const ConvertOptions& convertOptions) {
+	if(productShape != nullptr) {
+		// Capture the world placement origin independently of the representation —
+		// broken window geometries yield no meshes but still have a valid placement.
+		carve::math::Matrix m = productShape->getTransform();
+		carve::geom::vector<3> o = m * carve::geom::VECTOR(0.0, 0.0, 0.0);
+		m_placementPoint.set(o.x, o.y, o.z);
+		m_hasPlacementPoint = true;
+	}
 	transform(productShape);
 	fetchGeometry(productShape, errors, convertOptions.m_distanceEps);
 	fetchOpenings(openings, convertOptions.m_distanceEps);
+	// capture the original IFC appearance color for the raw-geometry (VicIFC) export
+	m_color = firstAppearanceColor(productShape);
 }
 
 void BuildingElement::getShapeOfParts(const std::vector<std::shared_ptr<ProductShapeData>>& partsShapeVect, std::vector<ConvertError>& errors) {
@@ -669,6 +739,50 @@ double BuildingElement::openingArea() const {
 	return 0;
 }
 
+bool BuildingElement::hasGeometricCenterFromGeometry(IBKMK::Vector3D& center) const {
+	if(!m_surfaces.empty())
+		return geometricCenter(center);
+	for(const auto& ms : m_originalMesh) {
+		if(ms && !ms->vertex_storage.empty())
+			return geometricCenter(center);
+	}
+	return false;
+}
+
+bool BuildingElement::geometricCenter(IBKMK::Vector3D& center) const {
+	IBKMK::Vector3D mn(1e20,1e20,1e20), mx(-1e20,-1e20,-1e20);
+	bool have = false;
+	if(!m_surfaces.empty()) {
+		for(const Surface& os : m_surfaces) {
+			const IBKMK::Vector3D& a = os.aabbMin();
+			const IBKMK::Vector3D& b = os.aabbMax();
+			mn.m_x = std::min(mn.m_x, a.m_x); mn.m_y = std::min(mn.m_y, a.m_y); mn.m_z = std::min(mn.m_z, a.m_z);
+			mx.m_x = std::max(mx.m_x, b.m_x); mx.m_y = std::max(mx.m_y, b.m_y); mx.m_z = std::max(mx.m_z, b.m_z);
+			have = true;
+		}
+	}
+	else {
+		for(const auto& ms : m_originalMesh) {
+			if(!ms)
+				continue;
+			for(const auto& v : ms->vertex_storage) {
+				mn.m_x = std::min(mn.m_x, v.v.x); mn.m_y = std::min(mn.m_y, v.v.y); mn.m_z = std::min(mn.m_z, v.v.z);
+				mx.m_x = std::max(mx.m_x, v.v.x); mx.m_y = std::max(mx.m_y, v.v.y); mx.m_z = std::max(mx.m_z, v.v.z);
+				have = true;
+			}
+		}
+	}
+	if(!have) {
+		if(m_hasPlacementPoint) {
+			center = m_placementPoint;
+			return true;
+		}
+		return false;
+	}
+	center.set((mn.m_x+mx.m_x)*0.5, (mn.m_y+mx.m_y)*0.5, (mn.m_z+mx.m_z)*0.5);
+	return true;
+}
+
 TiXmlElement *BuildingElement::writeXML(TiXmlElement *parent, const ConvertOptions& convertOptions) const {
 	if (m_id == -1)
 		return nullptr;
@@ -741,13 +855,21 @@ namespace {
 	Surfaces with an area below m_minimumSurfaceArea are rejected silently to avoid
 	polluting the output with sliver faces produced by Carve CSG subtractions.
 	Returns a surface with m_id == INVALID_ID on failure. */
-VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions& options, const std::string& guid) {
+VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions& options, const std::string& guid,
+										 bool predictXmlRoundTrip = true) {
 	VICUS::Surface vsurf;
 
-	if(!s.check(options.m_polygonEps))
+	// Surface::check() rejects polygons whose FIRST vertex lies near x==0 or y==0 in
+	// world coordinates (a workaround for the VICUS polyline XML round-trip). For the
+	// mesh path that would silently drop every face touching the world axes — the FZK
+	// house sits at the origin, so whole wall front/back faces disappeared. Only apply
+	// it when the surface is destined for XML serialization.
+	if(predictXmlRoundTrip && !s.check(options.m_polygonEps))
 		return vsurf;
 
-	if(s.area() < options.m_minimumSurfaceArea)
+	// The minimum-area filter (default 0.01 m2) is meant for energy-model surfaces; for
+	// the visual mesh it silently deletes detail faces (window frame profiles, roof trims).
+	if(predictXmlRoundTrip && s.area() < options.m_minimumSurfaceArea)
 		return vsurf;
 
 	const std::vector<IBKMK::Vector3D>& polyVect = s.polygon();
@@ -764,42 +886,15 @@ VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions&
 		return vsurf;
 	}
 
-	// Simulate VICUS XML round-trip to catch precision-related losses early.
-	{
-		IBKMK::Vector3D rtOffset, rtNormal, rtLocalX;
-		try {
-			rtOffset = IBKMK::Vector3D::fromString(poly3D.offset().toString());
-			rtNormal = IBKMK::Vector3D::fromString(poly3D.normal().toString());
-			rtLocalX = IBKMK::Vector3D::fromString(poly3D.localX().toString());
-		}
-		catch (...) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") offset/normal/localX vectors fail serialization round-trip - skipping";
-			return vsurf;
-		}
-
-		const std::vector<IBKMK::Vector2D>& polylineVerts = poly3D.polyline().vertexes();
-		std::vector<IBKMK::Vector2D> rtVerts(polylineVerts.size());
-		for(size_t i = 0; i < polylineVerts.size(); ++i) {
-			std::stringstream ss;
-			ss << polylineVerts[i].m_x << " " << polylineVerts[i].m_y;
-			ss >> rtVerts[i].m_x >> rtVerts[i].m_y;
-		}
-
-		IBKMK::Polygon2D rtPoly2D(rtVerts);
-		if(!rtPoly2D.isValid()) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") polygon will not survive XML round-trip (invalid polyline) - skipping";
-			return vsurf;
-		}
-
-		IBKMK::Polygon3D rtPoly3D(rtPoly2D, rtOffset, rtNormal, rtLocalX);
-		if(!rtPoly3D.isValid()) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") polygon will not survive XML round-trip (invalid polygon3D) - skipping";
-			return vsurf;
-		}
-	}
+	// Predict the VICUS XML round-trip; helper logs the specific failure mode
+	// (Polygon2D collapse, first-vertex shift after collinear-elim, or rotation
+	// precondition violation) so the root cause is visible in the import log.
+	// The round-trip predictor is only relevant when the surface is serialized as a
+	// VICUS::Surface (shading export). For the VicIFC mesh we only need the triangulation,
+	// so callers skip it — otherwise most (valid) wall faces get dropped and the walls
+	// disappear.
+	if(predictXmlRoundTrip && !willSurviveXmlRoundTrip(poly3D, s.name(), s.id()))
+		return vsurf;
 
 	vsurf.m_id = s.id();
 	vsurf.m_displayName = QString::fromStdString(s.name());
@@ -835,6 +930,36 @@ VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions&
 	}
 	if(!vicusSubSurfaces.empty())
 		vsurf.setSubSurfaces(vicusSubSurfaces);
+
+	// Convert holes (subsurface entries with no matched opening element — negative
+	// m_elementEntityId). Mirrors the loop in SpaceBoundary::getVicusSurface.
+	std::vector<VICUS::Hole> vicusHoles;
+	for(const auto& sub : s.holes()) {
+		if(!sub.isValid())
+			continue;
+
+		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
+		if(poly2D.size() < 3) {
+			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+				<< ") has less than 3 vertices - skipping";
+			continue;
+		}
+
+		VICUS::Polygon2D vicusPoly2D(poly2D);
+		if(!vicusPoly2D.isValid()) {
+			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+				<< ") has invalid 2D polygon - skipping";
+			continue;
+		}
+
+		VICUS::Hole vh;
+		vh.m_id = sub.id();
+		vh.m_displayName = QString::fromStdString(sub.name());
+		vh.m_holePolygon = vicusPoly2D;
+		vicusHoles.push_back(vh);
+	}
+	if(!vicusHoles.empty())
+		vsurf.setHoles(vicusHoles);
 
 	return vsurf;
 }
@@ -1214,6 +1339,283 @@ VICUS::ShadingObject BuildingElement::getVicusShadingObject(const ConvertOptions
 	}
 	shading.m_surfaces = vicusSurfaces;
 	return shading;
+}
+
+void BuildingElement::appendMeshWithOpenings(const std::map<int, const Opening*>& openingById,
+											 const ConvertOptions& options,
+											 std::vector<IBKMK::Vector3D>& vertexes,
+											 std::vector<IBKMK::Vector3D>& normals,
+											 std::vector<unsigned int>& indices) const {
+	// Cut each contained opening into every wall face it pierces — a window/door goes
+	// through the wall solid, so both the front AND the back face need a hole (a single-
+	// sided cut leaves the outer skin covering the window). Over-perforation is avoided
+	// per face: an opening solid has ~6 faces that would all clip onto the same wall
+	// face, so we stop after the first of its surfaces that fits (one hole per
+	// face/opening pair).
+	for(const Surface& s : m_surfaces) {
+		Surface probe = s;
+		for(int opId : m_containedOpenings) {
+			std::map<int, const Opening*>::const_iterator it = openingById.find(opId);
+			if(it == openingById.end() || it->second == nullptr)
+				continue;
+			const Opening* op = it->second;
+			// prefer the precise opening∩element geometry over the raw (oversized) solid
+			const std::vector<Surface>& opSurfaces =
+					!op->surfacesCSGElement().empty() ? op->surfacesCSGElement() : op->surfaces();
+			for(const Surface& os : opSurfaces) {
+				if(probe.addSubSurface(os))
+					break;	// one hole per face/opening pair
+			}
+		}
+
+		// The CDT triangulation below can allocate unboundedly (bad_alloc after GBs) on
+		// degenerate input — non-finite coordinates or hole edges crossing the outer ring.
+		// Log each face before triangulating so a runaway is attributable in the step log,
+		// and skip non-finite geometry outright.
+		bool faceFinite = true;
+		for(const IBKMK::Vector3D& v : probe.polygon()) {
+			if(!std::isfinite(v.m_x) || !std::isfinite(v.m_y) || !std::isfinite(v.m_z)) {
+				faceFinite = false;
+				break;
+			}
+		}
+		// CDT's KDTree splits nodes forever when two projected polygon vertices coincide —
+		// that is the bad_alloc runaway. Only that case must be intercepted; slightly
+		// non-planar faces are fine (CDT projects into the plane anyway; an earlier
+		// planarity threshold of 1e-4 silently deleted most real-world (WSHH) wall faces).
+		// The classic culprit is a "band ring": the coplanar face merge folds a thin plate
+		// into ONE ring (front polygon + back polygon reversed) whose Newell normal is
+		// near zero and whose projections coincide pairwise.
+		bool facePinched = false;
+		{
+			const std::vector<IBKMK::Vector3D>& pv = probe.polygon();
+			// Newell normal — near-zero magnitude means the ring folds back on itself
+			IBKMK::Vector3D nrm(0,0,0);
+			for(size_t i = 0, n = pv.size(); i < n; ++i) {
+				const IBKMK::Vector3D& a = pv[i];
+				const IBKMK::Vector3D& b = pv[(i+1) % n];
+				nrm.m_x += (a.m_y - b.m_y) * (a.m_z + b.m_z);
+				nrm.m_y += (a.m_z - b.m_z) * (a.m_x + b.m_x);
+				nrm.m_z += (a.m_x - b.m_x) * (a.m_y + b.m_y);
+			}
+			const double nrmMag = nrm.magnitude();
+			if(nrmMag < 1e-9) {
+				facePinched = true;
+			}
+			else {
+				nrm /= nrmMag;
+				// coincident vertices after projecting out the normal component
+				for(size_t i = 0; !facePinched && i + 1 < pv.size(); ++i) {
+					for(size_t j = i + 1; j < pv.size(); ++j) {
+						IBKMK::Vector3D d = pv[i] - pv[j];
+						d -= nrm * d.scalarProduct(nrm);
+						if(d.magnitudeSquared() < 1e-12) {
+							facePinched = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		{
+			std::stringstream diag;
+			diag << "meshFace elem='" << m_name << "' surf=" << probe.id()
+				 << " verts=" << probe.polygon().size();
+			if(probe.polygon().size() <= 16) {
+				diag << " poly=(";
+				for(const IBKMK::Vector3D& p : probe.polygon())
+					diag << p.m_x << "," << p.m_y << "," << p.m_z << ";";
+				diag << ")";
+			}
+			for(const SubSurface& ss : probe.subSurfaces()) {
+				diag << " sub[" << ss.id() << "]=(";
+				for(const IBKMK::Vector2D& p : ss.polygon())
+					diag << p.m_x << "," << p.m_y << ";";
+				diag << ")";
+			}
+			for(const SubSurface& ss : probe.holes()) {
+				diag << " hole[" << ss.id() << "]=(";
+				for(const IBKMK::Vector2D& p : ss.polygon())
+					diag << p.m_x << "," << p.m_y << ";";
+				diag << ")";
+			}
+			if(!faceFinite)
+				diag << " SKIPPED non-finite";
+			if(facePinched)
+				diag << " SKIPPED pinched (coincident vertices)";
+			Logger::instance() << diag.str();
+		}
+		if(!faceFinite)
+			continue;
+
+		// Repair degenerate merged rings. The carve coplanar-face merge produces two
+		// kinds of broken rings:
+		//  (a) thin plates folded into ONE ring (front polygon + back polygon, joined
+		//      by fold edges of length == plate thickness), and
+		//  (b) self-touching rings where window holes are connected to the outer
+		//      boundary via zero-width slits (large facade layers lose their 85 m2
+		//      main faces without this!). (a) and (b) also occur combined.
+		// Strategy: split the ring into per-plane vertex groups along the thickness
+		// direction (shortest edge) when the offsets are cleanly bimodal, then run each
+		// planar (possibly self-touching) ring through a clipper union which separates
+		// outer boundary and holes robustly.
+		std::vector<Surface> facesToMesh;
+		if(facePinched) {
+			const std::vector<IBKMK::Vector3D>& pv = probe.polygon();
+			const size_t n = pv.size();
+			std::vector<polygon3D_t> planarRings;
+			if(n >= 6) {
+				// thickness direction = direction of the shortest non-degenerate edge
+				IBKMK::Vector3D thick(0,0,0);
+				double shortest = 1e30;
+				for(size_t i = 0; i < n; ++i) {
+					IBKMK::Vector3D e = pv[(i+1) % n] - pv[i];
+					const double len2 = e.magnitudeSquared();
+					if(len2 > 1e-12 && len2 < shortest) {
+						shortest = len2;
+						thick = e;
+					}
+				}
+				if(shortest < 1e29) {
+					thick.normalize();
+					double omin = 1e30, omax = -1e30;
+					std::vector<double> offs(n);
+					for(size_t i = 0; i < n; ++i) {
+						offs[i] = thick.scalarProduct(pv[i]);
+						omin = std::min(omin, offs[i]);
+						omax = std::max(omax, offs[i]);
+					}
+					if(omax - omin > 1e-6) {
+						const double mid = 0.5 * (omin + omax);
+						polygon3D_t front, back;
+						double wA[2] = {1e30, -1e30}, wB[2] = {1e30, -1e30};
+						for(size_t i = 0; i < n; ++i) {
+							if(offs[i] < mid) {
+								front.push_back(pv[i]);
+								wA[0] = std::min(wA[0], offs[i]); wA[1] = std::max(wA[1], offs[i]);
+							}
+							else {
+								back.push_back(pv[i]);
+								wB[0] = std::min(wB[0], offs[i]); wB[1] = std::max(wB[1], offs[i]);
+							}
+						}
+						// accept the split only when both groups collapse onto tight planes
+						// (true plate fold); otherwise the "thickness" direction was in-plane
+						if(front.size() >= 3 && back.size() >= 3 &&
+						   (wA[1]-wA[0]) < 1e-4 && (wB[1]-wB[0]) < 1e-4) {
+							planarRings.push_back(front);
+							planarRings.push_back(back);
+						}
+					}
+				}
+			}
+			if(planarRings.empty())
+				planarRings.push_back(pv);	// single-plane self-touching ring
+
+			for(const polygon3D_t& ring : planarRings) {
+				if(ring.size() < 3)
+					continue;
+				PlaneNormal plane(ring);
+				if(!plane.m_valid) {
+					// self-touching rings can start with a collinear triple — rotate
+					polygon3D_t rot = ring;
+					for(size_t s2 = 1; s2 < ring.size() && !plane.m_valid; ++s2) {
+						std::rotate(rot.begin(), rot.begin() + 1, rot.end());
+						plane = PlaneNormal(rot);
+					}
+				}
+				if(!plane.m_valid)
+					continue;
+				const std::vector<CoplanarUnionRing> urings =
+						unionCoplanarPolygons(std::vector<polygon3D_t>{ring}, plane);
+				for(const CoplanarUnionRing& ur : urings) {
+					if(ur.m_outer.size() < 3)
+						continue;
+					Surface fsurf(ur.m_outer);
+					fsurf.set(probe.id(), probe.elementId(), probe.name(), false);
+					for(const polygon3D_t& hole : ur.m_holes) {
+						if(hole.size() < 3)
+							continue;
+						Surface hs(hole);	// elementEntityId stays -1 -> becomes a hole
+						fsurf.addSubSurface(hs);
+					}
+					facesToMesh.push_back(fsurf);
+				}
+			}
+			if(facesToMesh.empty()) {
+				Logger::instance() << "meshFace SKIPPED degenerate (ring repair failed) elem='"
+					<< m_name << "' surf=" << probe.id();
+				continue;
+			}
+		}
+		else {
+			facesToMesh.push_back(probe);
+		}
+
+		// convert to a VICUS surface (carrying the subsurface holes) and triangulate;
+		// triangulationData() cuts the openings out in 2D (cheap and robust). Skip the
+		// XML-round-trip predictor here — the mesh only needs the triangulation, and the
+		// predictor would drop most valid wall faces (walls disappear). Guard against
+		// residual degenerate input (e.g. crossing hole constraints) aborting the whole
+		// conversion — a dropped face is recoverable, a lost import is not.
+		for(const Surface& face : facesToMesh) {
+			try {
+				VICUS::Surface vsurf = ifccSurfaceToVicusSurface(face, options, std::string(), false);
+				const VICUS::PlaneTriangulationData& tri = vsurf.geometry().triangulationData();
+				if(tri.m_triangles.empty() || tri.m_vertexes.empty())
+					continue;
+
+				// The renderer culls backfaces, so the triangle winding must match the
+				// OUTWARD face orientation. VICUS' Polygon2D healing normalizes the 2D
+				// winding and thereby loses the original carve orientation — realign:
+				// reference is the Newell normal of the original (carve-ordered) ring;
+				// if the first triangle disagrees, flip all triangles of this face.
+				IBKMK::Vector3D outward(0,0,0);
+				{
+					const std::vector<IBKMK::Vector3D>& pvf = face.polygon();
+					for(size_t i = 0, n2 = pvf.size(); i < n2; ++i) {
+						const IBKMK::Vector3D& a = pvf[i];
+						const IBKMK::Vector3D& b = pvf[(i+1) % n2];
+						outward.m_x += (a.m_y - b.m_y) * (a.m_z + b.m_z);
+						outward.m_y += (a.m_z - b.m_z) * (a.m_x + b.m_x);
+						outward.m_z += (a.m_x - b.m_x) * (a.m_y + b.m_y);
+					}
+				}
+				bool flip = false;
+				IBKMK::Vector3D n = vsurf.geometry().normal();
+				if(outward.magnitudeSquared() > 1e-18) {
+					outward.normalize();
+					const IBKMK::Triangulation::triangle_t& t0 = tri.m_triangles.front();
+					const IBKMK::Vector3D e1 = tri.m_vertexes[t0.i2] - tri.m_vertexes[t0.i1];
+					const IBKMK::Vector3D e2 = tri.m_vertexes[t0.i3] - tri.m_vertexes[t0.i1];
+					const IBKMK::Vector3D triN = e1.crossProduct(e2);
+					flip = triN.scalarProduct(outward) < 0;
+					n = outward;
+				}
+
+				const unsigned int base = (unsigned int)vertexes.size();
+				for(const IBKMK::Vector3D& v : tri.m_vertexes) {
+					vertexes.push_back(v);
+					normals.push_back(n);
+				}
+				for(const IBKMK::Triangulation::triangle_t& t : tri.m_triangles) {
+					indices.push_back(base + t.i1);
+					if(flip) {
+						indices.push_back(base + t.i3);
+						indices.push_back(base + t.i2);
+					}
+					else {
+						indices.push_back(base + t.i2);
+						indices.push_back(base + t.i3);
+					}
+				}
+			}
+			catch(std::exception& ex) {
+				Logger::instance() << "meshFace triangulation failed elem='" << m_name
+					<< "' surf=" << face.id() << " : " << ex.what();
+			}
+		}
+	}
 }
 
 

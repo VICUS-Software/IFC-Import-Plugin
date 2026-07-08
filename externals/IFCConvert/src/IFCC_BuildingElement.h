@@ -16,6 +16,8 @@
 #include <ifcpp/IFC4X3/include/IfcWallType.h>
 #include <ifcpp/IFC4X3/include/IfcBuildingElementPart.h>
 
+#include <QColor>
+
 #include <VICUS_ShadingObject.h>
 
 #include "IFCC_GeometryInputData.h"
@@ -153,8 +155,11 @@ public:
 		It set a name and fills the original storey vector.
 		\param ifcElement Original IFC building element
 		\param type type from ObjectTypes evaluated from concrete IFC class type
+		\param lengthFactor Factor for converting model length units into [m]
+			(e.g. 0.001 for mm-based IFC files). Applied to IfcMaterialLayer
+			thicknesses, which are stored in project units in the IFC file.
 	*/
-	bool set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, BuildingElementTypes type);
+	bool set(std::shared_ptr<IFC4X3::IfcElement> ifcElement, BuildingElementTypes type, double lengthFactor = 1.0);
 
 	/*! get and transform geometry and set first opening properties.
 		\param Shape data of a building element.
@@ -192,6 +197,19 @@ public:
 	*/
 	double openingArea() const;
 
+	/*! Geometric center (AABB midpoint) of the element geometry in world coordinates [m].
+		Uses the polygonal surfaces when available, otherwise falls back to the raw
+		carve mesh — broken window geometries (WSHH revolved arches) often fail polygon
+		extraction but still carry a valid mesh.
+		\return False if no geometry exists at all (center is left unchanged).
+	*/
+	bool geometricCenter(IBKMK::Vector3D& center) const;
+
+	/*! Like geometricCenter(), but only from real geometry (surfaces or original mesh) —
+		never falls back to the placement point. Representation-less products carry an
+		unresolved (identity) placement, so their placement point is a bogus (0,0,0). */
+	bool hasGeometricCenterFromGeometry(IBKMK::Vector3D& center) const;
+
 	/*! Returns true if the element can be used as subsurface component (opening element).*/
 	bool isSubSurfaceComponent() const {
 		return m_subSurfaceComponent;
@@ -222,9 +240,21 @@ public:
 		return m_type;
 	}
 
+	/*! Original IFC appearance/style color of this element (invalid QColor if the IFC
+		model carries no color for it). Filled in update() from the product shape appearances. */
+	QColor color() const {
+		return m_color;
+	}
+
 	/*! Return true if this building element aggregates one or more layered
 		IfcBuildingElementPart children (used by createSpaceBoundaries_2 to skip
 		walls whose parts will be matched instead).*/
+	/*! Return the aggregated IfcBuildingElementPart children (layered walls,
+		composite windows/doors whose geometry lives in parts). */
+	const std::vector<std::shared_ptr<IFC4X3::IfcBuildingElementPart>>& elementParts() const {
+		return m_hasElementParts;
+	}
+
 	bool hasElementParts() const {
 		return !m_hasElementParts.empty();
 	}
@@ -240,6 +270,19 @@ public:
 		\return ShadingObject with m_id == INVALID_ID if no valid surfaces exist.
 	*/
 	VICUS::ShadingObject getVicusShadingObject(const ConvertOptions& options) const;
+
+	/*! Appends this element's faces with its contained window/door openings cut out as
+		holes, as an indexed triangle mesh (for the VicIFC raw-geometry export). Uses cheap
+		2D triangulation-with-holes (no 3D CSG): each face gets the contained openings
+		projected on as subsurfaces, then VICUS triangulates the face with the holes cut out.
+		\param openingById Lookup from opening id to Opening (for this element's contained openings).
+		\param options Convert options (surface validation thresholds).
+		\param vertexes/normals/indices Appended indexed triangle mesh (global CRS, [m]). */
+	void appendMeshWithOpenings(const std::map<int, const Opening*>& openingById,
+								const ConvertOptions& options,
+								std::vector<IBKMK::Vector3D>& vertexes,
+								std::vector<IBKMK::Vector3D>& normals,
+								std::vector<unsigned int>& indices) const;
 
 	/*! Vector of thickness and name for the layers of this element.*/
 	std::vector<std::pair<double,std::string>>							m_materialLayers;
@@ -273,6 +316,21 @@ public:
 
 	/*! Original 3D mesh from conversion IFC to carve.*/
 	meshVector_t														m_originalMesh;
+
+	/*! World position of the element's local placement origin [m] (from the IFC
+		object placement chain). Fallback position for elements whose representation
+		could not be converted to meshes/polygons. Valid only if m_hasPlacementPoint. */
+	IBKMK::Vector3D														m_placementPoint;
+	bool																m_hasPlacementPoint = false;
+
+	/*! Original IFC entity class name (e.g. "IfcWindow", "IfcPlate") — shown as
+		"IFC type" in the VICUS selection-information dialog. The BET_* enum only
+		covers construction-relevant classes; everything else displayed
+		"not defined" before. */
+	std::string															m_ifcClassName;
+
+	/*! Original IFC appearance color (invalid if the model carries none).*/
+	QColor																m_color;
 
 private:
 	/*! Fille the surface pair vector.*/

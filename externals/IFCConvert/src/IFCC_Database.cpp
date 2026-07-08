@@ -293,7 +293,21 @@ void Database::addToVicusProject(VICUS::Project* project, std::map<int,int>& idM
 	addItems(project->m_embeddedDB.m_constructions, m_constructions, idMap);
 	addItems(project->m_embeddedDB.m_windowGlazingSystems, m_windowGlazings, idMap);
 	addItems(project->m_embeddedDB.m_windows, m_windows, idMap);
-	addItems(project->m_embeddedDB.m_subSurfaceComponents, m_subSurfaceComponents, idMap);
+
+	// VICUS::SubSurfaceComponent has been removed; SubSurfaceComponentInstance now
+	// references either a Window (for windows) or a Construction (for doors/misc)
+	// directly via m_idConstruction. Remap each IFCC SubSurfaceComponent id to the
+	// VICUS id of its underlying Window or Construction so the ComponentInstance
+	// export below can resolve idMap[ifccSubSurfaceCompId] in one lookup.
+	for(const auto& kv : m_subSurfaceComponents) {
+		const SubSurfaceComponent& ssc = kv.second;
+		const int sourceId = (ssc.windowId() != -1) ? ssc.windowId() : ssc.constructionId();
+		if(sourceId == -1)
+			continue;
+		auto fit = idMap.find(sourceId);
+		if(fit != idMap.end())
+			idMap[ssc.id()] = fit->second;
+	}
 }
 
 

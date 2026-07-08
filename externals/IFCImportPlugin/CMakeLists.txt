@@ -40,6 +40,7 @@ include_directories(
 	${PROJECT_SOURCE_DIR}/../CCM/src
 	${PROJECT_SOURCE_DIR}/../DataIO/src
 	${PROJECT_SOURCE_DIR}/../VicOSM/src
+	${PROJECT_SOURCE_DIR}/../VicIFC/src
 	${PROJECT_SOURCE_DIR}/../ifcplusplus/src/IfcPlusPlus/src/external/glm/glm
 	${PROJECT_SOURCE_DIR}/../clipper/src
 )
@@ -84,6 +85,7 @@ target_link_libraries(ImportIFCPlugin PRIVATE
     IFCConvert_static
     Vicus
     VicOSM_static
+    VicIFC_static
     Nandrad
     QtExt_static
     ifcplusplus_static

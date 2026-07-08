@@ -39,6 +39,10 @@ public:
 		return m_polyVect;
 	}
 
+	/*! Return the polygon converted back to 3D using the subsurface's own plane
+		(the plane the 2D polygon was created in). Used for the VicIFC raw-geometry export. */
+	std::vector<IBKMK::Vector3D> polygon3D() const;
+
 	/*! Return if the object is valid.*/
 	bool isValid() const {
 		return m_valid;

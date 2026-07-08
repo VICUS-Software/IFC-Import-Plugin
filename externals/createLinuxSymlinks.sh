@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Array mit den Ordnernamen
-folders=("IBK" "IBKMK" "QtExt" "TiCPP" "clipper" "lib_x64" "Vicus" "Nandrad" "CCM" "DataIO" "glm" "VicOSM" "QuaZIP" "HiGHS" "NandradFMUGenerator")
+folders=("IBK" "IBKMK" "QtExt" "TiCPP" "clipper" "lib_x64" "Vicus" "Nandrad" "CCM" "DataIO" "glm" "VicOSM" "VicIFC" "QuaZIP" "HiGHS" "NandradFMUGenerator")
 
 # Zielordner festlegen, in dem der Symlink erstellt werden soll
 target_folder="../externals"

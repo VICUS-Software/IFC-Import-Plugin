@@ -576,19 +576,34 @@ PlaneNormal::PlaneNormal(const std::vector<IBKMK::Vector3D>& polygon) :
 	m_distance(0),
 	m_rotationMatrixInv(new RotationMatrix)
 {
-	IBK_ASSERT(polygon.size() > 2);
+	// Degenerate polygons (e.g. empty/collapsed SB fragments from broken IFC models) must
+	// not crash the import — IBK_ASSERT is a no-op in release builds, so check explicitly
+	// and bail out with m_valid == false (callers check validity).
+	if(polygon.size() < 3) {
+		m_valid = false;
+		m_rotationMatrix.reset(new RotationMatrix);
+		return;
+	}
 
 	m_pos = polygon[0];
 	m_lx = polygon[1] - polygon[0];
 	m_ly =  polygon.back() - polygon[0];
 	m_lz = m_lx.crossProduct(m_ly);
-	if (m_lz.magnitude() < 1e-9)
+	if (m_lz.magnitude() < 1e-9) {
+		// collapsed spanning vectors — continuing would divide by ~0 below
 		m_valid = false;
+		m_rotationMatrix.reset(new RotationMatrix);
+		return;
+	}
 
 	IBKMK::Vector3D n0 = m_lz * (1.0 / m_lz.magnitude());
 	double d = m_pos.scalarProduct(n0);
 	double fact = vectorDirection(n0);
-	IBK_ASSERT(!IBK::near_zero(fact));
+	if(IBK::near_zero(fact)) {
+		m_valid = false;
+		m_rotationMatrix.reset(new RotationMatrix);
+		return;
+	}
 
 	m_distance = d * fact * -1.0;
 

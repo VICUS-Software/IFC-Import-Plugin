@@ -645,94 +645,12 @@ void ReaderSTEP::readEntityArguments( std::vector<std::pair<std::string, shared_
 			try
 			{
 				entity->readStepArguments(arguments_decoded, map_entities_ptr_local, errorStream);
-
-				if( entity->classID() == IFCSTYLEDITEM )
-				{
-					int tag = entity->m_tag;
-					shared_ptr<IfcStyledItem> styledItem = dynamic_pointer_cast<IfcStyledItem>(entity);
-					if( styledItem )
-					{
-						std::vector<shared_ptr<IfcPresentationStyle> >			vec_presentationStylesReplaced;
-						for( shared_ptr<IfcPresentationStyle>& presentationStyle : styledItem->m_Styles )
-						{
-							if( !presentationStyle )
-							{
-								continue;
-							}
-
-							shared_ptr<IfcPresentationStyleAssignment> presentationStyleAssignment = dynamic_pointer_cast<IfcPresentationStyleAssignment>(presentationStyle);
-							if( presentationStyleAssignment )
-							{
-								// IFCPRESENTATIONSTYLEASSIGNMENT has been removed in IFC4X3
-								// old:    IfcRepresentationItem  <- IFCSTYLEDITEM ->  IFCPRESENTATIONSTYLEASSIGNMENT -> IFCSURFACESTYLE
-								// new      IfcRepresentationItem  <- IFCSTYLEDITEM ->     [x]   ->      IFCSURFACESTYLE
-
-								for( shared_ptr<IfcPresentationStyle>& presentationStyle : presentationStyleAssignment->m_Styles )
-								{
-									if( !presentationStyle )
-									{
-										continue;
-									}
-
-									//ENTITY IfcPresentationStyle ABSTRACT SUPERTYPE OF (ONEOF (IfcCurveStyle ,IfcFillAreaStyle ,IfcSurfaceStyle ,IfcTextStyle));
-
-									shared_ptr<IfcSurfaceStyle> surfaceStyle = dynamic_pointer_cast<IfcSurfaceStyle>(presentationStyle);
-									if( surfaceStyle )
-									{
-										vec_presentationStylesReplaced.push_back(surfaceStyle);
-										continue;
-									}
-
-									shared_ptr<IfcCurveStyle> curveStyle = dynamic_pointer_cast<IfcCurveStyle>(presentationStyle);
-									if( curveStyle )
-									{
-										vec_presentationStylesReplaced.push_back(curveStyle);
-										continue;
-									}
-
-									shared_ptr<IfcFillAreaStyle> fillAreaStyle = dynamic_pointer_cast<IfcFillAreaStyle>(presentationStyle);
-									if( fillAreaStyle )
-									{
-										vec_presentationStylesReplaced.push_back(fillAreaStyle);
-										continue;
-									}
-
-									shared_ptr<IfcTextStyle> textStyle = dynamic_pointer_cast<IfcTextStyle>(presentationStyle);
-									if( textStyle )
-									{
-										vec_presentationStylesReplaced.push_back(textStyle);
-										continue;
-									}
-								}
-								continue;
-							}
-
-							vec_presentationStylesReplaced.push_back(presentationStyle);
-						}
-
-						styledItem->m_Styles = vec_presentationStylesReplaced;
-					}
-				}
-
-				// prepare an estimation of mesh size
-				shared_ptr<IfcProduct> elementAsProduct = dynamic_pointer_cast<IfcProduct>(entity);
-				if( elementAsProduct )
-				{
-					shared_ptr<IfcProductRepresentation> productRepresentation = elementAsProduct->m_Representation;
-					if( productRepresentation )
-					{
-						for( const shared_ptr<IfcRepresentation>& representation : productRepresentation->m_Representations )
-						{
-							for( const shared_ptr<IfcRepresentationItem>& representation_item : representation->m_Items )
-							{
-								if( representation_item->classID() != IFC4X3::IFCBOUNDINGBOX )
-								{
-									++model->m_num_geometric_items;
-								}
-							}
-						}
-					}
-				}
+				// NOTE: the IFCSTYLEDITEM flattening and the mesh-size estimation that
+				// used to live here dereference OTHER entities (style assignments,
+				// product representations) whose attribute vectors may still be under
+				// construction by concurrent readStepArguments calls — a data race that
+				// caused sporadic segfaults on files with many styled items. Both run
+				// in the serial post-pass below, after the implicit barrier.
 			}
 			catch( std::exception& e )
 			{
@@ -791,6 +709,108 @@ void ReaderSTEP::readEntityArguments( std::vector<std::pair<std::string, shared_
 			}
 		}
 	}   // implicic barrier
+
+	// Serial post-pass: all readStepArguments calls are complete, so it is now safe
+	// to follow references INTO other entities.
+	for( int i=0; i<num_objects; ++i )
+	{
+		const shared_ptr<BuildingEntity>& entity = (*vec_entities_ptr)[i].second;
+		if( !entity )
+		{
+			continue;
+		}
+
+		if( entity->classID() == IFCSTYLEDITEM )
+		{
+			shared_ptr<IfcStyledItem> styledItem = dynamic_pointer_cast<IfcStyledItem>(entity);
+			if( styledItem )
+			{
+				std::vector<shared_ptr<IfcPresentationStyle> >			vec_presentationStylesReplaced;
+				for( shared_ptr<IfcPresentationStyle>& presentationStyle : styledItem->m_Styles )
+				{
+					if( !presentationStyle )
+					{
+						continue;
+					}
+
+					shared_ptr<IfcPresentationStyleAssignment> presentationStyleAssignment = dynamic_pointer_cast<IfcPresentationStyleAssignment>(presentationStyle);
+					if( presentationStyleAssignment )
+					{
+						// IFCPRESENTATIONSTYLEASSIGNMENT has been removed in IFC4X3
+						// old:    IfcRepresentationItem  <- IFCSTYLEDITEM ->  IFCPRESENTATIONSTYLEASSIGNMENT -> IFCSURFACESTYLE
+						// new      IfcRepresentationItem  <- IFCSTYLEDITEM ->     [x]   ->      IFCSURFACESTYLE
+
+						for( shared_ptr<IfcPresentationStyle>& presentationStyleInner : presentationStyleAssignment->m_Styles )
+						{
+							if( !presentationStyleInner )
+							{
+								continue;
+							}
+
+							//ENTITY IfcPresentationStyle ABSTRACT SUPERTYPE OF (ONEOF (IfcCurveStyle ,IfcFillAreaStyle ,IfcSurfaceStyle ,IfcTextStyle));
+
+							shared_ptr<IfcSurfaceStyle> surfaceStyle = dynamic_pointer_cast<IfcSurfaceStyle>(presentationStyleInner);
+							if( surfaceStyle )
+							{
+								vec_presentationStylesReplaced.push_back(surfaceStyle);
+								continue;
+							}
+
+							shared_ptr<IfcCurveStyle> curveStyle = dynamic_pointer_cast<IfcCurveStyle>(presentationStyleInner);
+							if( curveStyle )
+							{
+								vec_presentationStylesReplaced.push_back(curveStyle);
+								continue;
+							}
+
+							shared_ptr<IfcFillAreaStyle> fillAreaStyle = dynamic_pointer_cast<IfcFillAreaStyle>(presentationStyleInner);
+							if( fillAreaStyle )
+							{
+								vec_presentationStylesReplaced.push_back(fillAreaStyle);
+								continue;
+							}
+
+							shared_ptr<IfcTextStyle> textStyle = dynamic_pointer_cast<IfcTextStyle>(presentationStyleInner);
+							if( textStyle )
+							{
+								vec_presentationStylesReplaced.push_back(textStyle);
+								continue;
+							}
+						}
+						continue;
+					}
+
+					vec_presentationStylesReplaced.push_back(presentationStyle);
+				}
+
+				styledItem->m_Styles = vec_presentationStylesReplaced;
+			}
+		}
+
+		// prepare an estimation of mesh size
+		shared_ptr<IfcProduct> elementAsProduct = dynamic_pointer_cast<IfcProduct>(entity);
+		if( elementAsProduct )
+		{
+			shared_ptr<IfcProductRepresentation> productRepresentation = elementAsProduct->m_Representation;
+			if( productRepresentation )
+			{
+				for( const shared_ptr<IfcRepresentation>& representation : productRepresentation->m_Representations )
+				{
+					if( !representation )
+					{
+						continue;
+					}
+					for( const shared_ptr<IfcRepresentationItem>& representation_item : representation->m_Items )
+					{
+						if( representation_item && representation_item->classID() != IFC4X3::IFCBOUNDINGBOX )
+						{
+							++model->m_num_geometric_items;
+						}
+					}
+				}
+			}
+		}
+	}
 
 	if( err.tellp() > 0 )
 	{

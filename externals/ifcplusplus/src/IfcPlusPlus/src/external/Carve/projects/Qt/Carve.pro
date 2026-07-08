@@ -43,10 +43,13 @@ greaterThan(QT_MAJOR_VERSION, 4) {
 		QMAKE_CXXFLAGS += -std=c++17
 	}
 
-DESTDIR = ../../../../../../../../lib$${DIR_PREFIX}
 LIBS += -L../../../../../../../../lib$${DIR_PREFIX}
 
 CONFIG(debug, debug|release) {
+	# Build into the common lib dir (externals/lib/debug) so Carve sits alongside all
+	# the other libraries and is found at runtime like every other dependency.
+	# (Previously it went to externals/lib_x64, which is not on the runtime lib path.)
+	DESTDIR = ../../../../../../../../lib/debug
 	OBJECTS_DIR = debug$${DIR_PREFIX}
 	windows {
 		contains( OPTIONS, top_level_libs ) {
@@ -58,6 +61,7 @@ CONFIG(debug, debug|release) {
 	}
 }
 else {
+	DESTDIR = ../../../../../../../../lib/release
 	OBJECTS_DIR = release$${DIR_PREFIX}
 	windows {
 		contains( OPTIONS, top_level_libs ) {

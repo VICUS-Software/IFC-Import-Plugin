@@ -76,6 +76,20 @@ public:
 	*/
 	void setFromSpaceBoundary(const SpaceBoundary& sb, size_t surfaceIndex);
 
+	/*! Copy content (except id) from given space boundary and use the given surface
+		as this boundary's surface. Used by the shell anchoring when one authored SB
+		spans several shell faces and has to be split into one SB per face.
+		\param sb Source space boundary — all metadata is copied.
+		\param surf Surface (piece) for this boundary; gets a fresh surface id.
+	*/
+	void setFromSpaceBoundaryWithSurface(const SpaceBoundary& sb, const Surface& surf);
+
+	/*! Remove all attached opening space boundaries (used when redistributing them
+		onto split SB pieces during shell anchoring).*/
+	void clearContainedOpeningSpaceBoundaries() {
+		m_containedOpeningSpaceBoundaries.clear();
+	}
+
 	/*! Initialise space boundary which doesn't have a connection to a buiding element.
 		It set a name, related space and type. Geometry is not set.
 		\param name Name for space boundary.
@@ -126,14 +140,10 @@ public:
 	bool checkSurface(double epsilon) const;
 
 
-	/*! Return the surface of this space boundary.*/
-	Surface surfaceWithSubsurfaces() const 	{
-		Surface ts = m_surface;
-		for(auto sub : m_containedOpeningSpaceBoundaries) {
-			ts.addSubSurface(sub->surface());
-		}
-		return ts;
-	}
+	/*! Return the surface of this space boundary including its opening subsurfaces.
+		Logs openings whose subsurface cannot be added (clip against parent failed) —
+		those would otherwise vanish silently from the output.*/
+	Surface surfaceWithSubsurfaces() const;
 
 	/*! Return GUID of the related building element.*/
 	std::string guidRelatedElement() const {

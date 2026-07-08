@@ -21,6 +21,7 @@
 #include "IFCC_RepresentationConverter.h"
 #include "IFCC_Database.h"
 #include "IFCC_Logger.h"
+#include "IFCC_PolygonRoundTripCheck.h"
 #include "IFCC_Space.h"
 
 
@@ -147,6 +148,35 @@ void SpaceBoundary::setFromSpaceBoundary(const SpaceBoundary& sb, size_t surface
 	IBK_ASSERT(surfaceIndex > 0);
 	IBK_ASSERT(surfaceIndex < sb.m_surfaces.size());
 	m_surface = sb.m_surfaces[surfaceIndex];
+	std::string name = m_nameRelatedElement;
+	if(IBK::trim_copy(name).empty()) {
+		name = m_name;
+	}
+	if(IBK::trim_copy(name).empty()) {
+		if(!m_description.empty())
+			name = m_description;
+		else
+			name = "surface";
+	}
+	m_surface.set(GUID_maker::instance().guid(), m_elementEntityId, name, isVirtual());
+}
+
+void SpaceBoundary::setFromSpaceBoundaryWithSurface(const SpaceBoundary& sb, const Surface& surf) {
+	m_name = sb.m_name;
+	m_description = sb.m_description;
+	m_elementEntityId = sb.m_elementEntityId;
+	m_guidRelatedElement = sb.m_guidRelatedElement;
+	m_guidRelatedSpace = sb.m_guidRelatedSpace;
+	m_guidCorrespondingBoundary = sb.m_guidCorrespondingBoundary;
+	m_nameRelatedElement = sb.m_nameRelatedElement;
+	m_nameRelatedSpace = sb.m_nameRelatedSpace;
+	m_typeRelatedElement = sb.m_typeRelatedElement;
+	m_physicalOrVirtual = sb.m_physicalOrVirtual;
+	m_internalOrExternal = sb.m_internalOrExternal;
+	m_type = sb.m_type;
+	m_spaceBoundaryType = sb.m_spaceBoundaryType;
+	m_levelType = sb.m_levelType;
+	m_surface = surf;
 	std::string name = m_nameRelatedElement;
 	if(IBK::trim_copy(name).empty()) {
 		name = m_name;
@@ -359,6 +389,22 @@ const std::vector<std::shared_ptr<SpaceBoundary> >& SpaceBoundary::containedOpen
 	return m_containedOpeningSpaceBoundaries;
 }
 
+Surface SpaceBoundary::surfaceWithSubsurfaces() const {
+	Surface ts = m_surface;
+	for(const auto& sub : m_containedOpeningSpaceBoundaries) {
+		if(!ts.addSubSurface(sub->surface())) {
+			// The opening polygon doesn't fit on this parent (clip empty or subsurface
+			// invalid) — the window/door silently disappears from the output otherwise.
+			Logger::instance() << "surfaceWithSubsurfaces: DROPPED opening sb id=" << sub->m_id
+							   << " name='" << sub->m_nameRelatedElement << "'"
+							   << " from parent sb id=" << m_id
+							   << " name='" << m_nameRelatedElement << "'"
+							   << " (subsurface clip failed, openingArea=" << sub->surface().area() << ")";
+		}
+	}
+	return ts;
+}
+
 static std::vector<IBKMK::Vector2D> mapToParentPlane(const SpaceBoundary& sb, const Surface& surface) {
 	std::vector<IBKMK::Vector2D> polyVect2D;
 	PlaneNormal plane(sb.surface().polygon());
@@ -370,6 +416,29 @@ static std::vector<IBKMK::Vector2D> mapToParentPlane(const SpaceBoundary& sb, co
 }
 
 void SpaceBoundary::addContainedOpeningSpaceBoundaries(const std::shared_ptr<SpaceBoundary>& containedOpeningSpaceBoundaries) {
+	// Reject openings that mostly overlap an ALREADY attached opening on this wall.
+	// The cross-space fallback can geometrically match a second opening (e.g. an
+	// interior door body projected onto the facade) onto the exact spot of an
+	// authored window — two stacked subsurfaces, the later one hiding the window.
+	// First attachment wins (authored IFC opening SBs are attached before fallback).
+	const Surface& newSurf = containedOpeningSpaceBoundaries->surface();
+	const double newArea = newSurf.area();
+	if(newArea > 0.0) {
+		for(const auto& existing : m_containedOpeningSpaceBoundaries) {
+			Surface inter = existing->surface().intersect(newSurf);
+			if(!inter.isValid(1e-4))
+				continue;
+			if(inter.area() > 0.6 * newArea) {
+				Logger::instance() << "addContainedOpeningSpaceBoundaries: REJECT overlapping opening"
+								   << " new='" << containedOpeningSpaceBoundaries->m_nameRelatedElement << "'"
+								   << " (area=" << newArea << ")"
+								   << " overlaps existing='" << existing->m_nameRelatedElement << "'"
+								   << " on sb='" << m_name << "' interArea=" << inter.area();
+				return;
+			}
+		}
+	}
+
 	// check if opening is at wrong position or too big
 	Surface::IntersectionResult res = m_surface.intersect2(containedOpeningSpaceBoundaries->surface());
 	const std::vector<Surface>& sBmO = res.m_diffBaseMinusClip;
@@ -426,54 +495,12 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 		return vsurf;
 	}
 
-	// Simulate the complete VICUS XML round-trip to detect precision-related issues.
-	// writeXML uses default ostream precision (~6 significant digits) for 2D polyline
-	// vertices and offset/normal/localX vectors. readXML reconstructs a Polygon2D from
-	// the deserialized values, which runs eliminateCollinearPoints() and can change vertex
-	// count or remove the (0,0) origin. It also reconstructs Polygon3D which validates
-	// unit-length normals, orthogonality, and that first vertex is (0,0).
-	// Any failure that would occur in readXML is detected here and the surface is skipped.
-	{
-		// Round-trip offset/normal/localX through toString()/fromString()
-		IBKMK::Vector3D rtOffset, rtNormal, rtLocalX;
-		try {
-			rtOffset = IBKMK::Vector3D::fromString(poly3D.offset().toString());
-			rtNormal = IBKMK::Vector3D::fromString(poly3D.normal().toString());
-			rtLocalX = IBKMK::Vector3D::fromString(poly3D.localX().toString());
-		}
-		catch (...) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") offset/normal/localX vectors fail serialization round-trip - skipping";
-			return vsurf;
-		}
-
-		// Round-trip 2D polyline vertices through ostream/istream (matching writeXML precision)
-		const std::vector<IBKMK::Vector2D>& polylineVerts = poly3D.polyline().vertexes();
-		std::vector<IBKMK::Vector2D> rtVerts(polylineVerts.size());
-		for(size_t i = 0; i < polylineVerts.size(); ++i) {
-			std::stringstream ss;
-			ss << polylineVerts[i].m_x << " " << polylineVerts[i].m_y;
-			ss >> rtVerts[i].m_x >> rtVerts[i].m_y;
-		}
-
-		// Replicate the exact readXML validation sequence:
-		// 1) Polygon2D(verts) + isValid check
-		IBKMK::Polygon2D rtPoly2D(rtVerts);
-		if(!rtPoly2D.isValid()) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") polygon will not survive XML round-trip (invalid polyline) - skipping";
-			return vsurf;
-		}
-
-		// 2) Polygon3D(Polygon2D(verts), offset, normal, localX) + isValid check
-		//    This checks first vertex == (0,0), unit normals, orthogonality, and setRotation.
-		IBKMK::Polygon3D rtPoly3D(rtPoly2D, rtOffset, rtNormal, rtLocalX);
-		if(!rtPoly3D.isValid()) {
-			Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
-				<< ") polygon will not survive XML round-trip (invalid polygon3D) - skipping";
-			return vsurf;
-		}
-	}
+	// Predict the VICUS XML round-trip and skip surfaces that would not survive it.
+	// The helper logs the specific failure mode (Polygon2D collapse, first-vertex
+	// shift after collinear elimination, or rotation precondition violation) so the
+	// root cause can be diagnosed from the import log.
+	if(!willSurviveXmlRoundTrip(poly3D, s.name(), s.id()))
+		return vsurf;
 
 	// Set id, displayName, ifcGUID
 	vsurf.m_id = s.id();
@@ -513,6 +540,38 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 	if(!vicusSubSurfaces.empty())
 		vsurf.setSubSurfaces(vicusSubSurfaces);
 
+	// Convert holes (subsurface entries with no matched opening element — negative
+	// m_elementEntityId, e.g. virtual breakouts, courtyard pass-throughs, unmatched
+	// IFC openings). Without this step, walls/slabs render closed and rooms whose
+	// volume depends on the cut-out fail the closed-volume check.
+	std::vector<VICUS::Hole> vicusHoles;
+	for(const auto& sub : s.holes()) {
+		if(!sub.isValid())
+			continue;
+
+		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
+		if(poly2D.size() < 3) {
+			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+				<< ") has less than 3 vertices - skipping";
+			continue;
+		}
+
+		VICUS::Polygon2D vicusPoly2D(poly2D);
+		if(!vicusPoly2D.isValid()) {
+			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+				<< ") has invalid 2D polygon - skipping";
+			continue;
+		}
+
+		VICUS::Hole vh;
+		vh.m_id = sub.id();
+		vh.m_displayName = QString::fromStdString(sub.name());
+		vh.m_holePolygon = vicusPoly2D;
+		vicusHoles.push_back(vh);
+	}
+	if(!vicusHoles.empty())
+		vsurf.setHoles(vicusHoles);
+
 	return vsurf;
 }
 
@@ -520,6 +579,15 @@ TiXmlElement *SpaceBoundary::writeXML(TiXmlElement *parent, const ConvertOptions
 	if(!isOpeningElement()) {
 		Surface s = surfaceWithSubsurfaces();
 		if(!s.check(convertOptions.m_polygonEps))
+			return nullptr;
+
+		// Last line of defense: predict the VICUS XML round-trip. Clipper output
+		// (shell anchoring fills, intersection residuals) can carry spike vertices
+		// that survive check() but collapse under the XML coordinate rounding —
+		// VICUS then rejects the whole surface at read time ("Error reading
+		// Polygon3D"), leaving rooms with missing faces.
+		IBKMK::Polygon3D poly3D(s.polygon());
+		if(!poly3D.isValid() || !willSurviveXmlRoundTrip(poly3D, s.name(), s.id()))
 			return nullptr;
 
 		s.writeXML(parent, convertOptions);

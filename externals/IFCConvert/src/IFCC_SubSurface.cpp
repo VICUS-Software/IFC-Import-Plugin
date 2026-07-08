@@ -75,4 +75,12 @@ TiXmlElement * SubSurface::writeXML(TiXmlElement * parent, bool isHole) const {
 	return e;
 }
 
+std::vector<IBKMK::Vector3D> SubSurface::polygon3D() const {
+	std::vector<IBKMK::Vector3D> res;
+	res.reserve(m_polyVect.size());
+	for(const IBKMK::Vector2D& p : m_polyVect)
+		res.push_back(m_planeNormal.convert3DPointInv(p));
+	return res;
+}
+
 } // namespace IFCC

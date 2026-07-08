@@ -39,6 +39,21 @@ public:
 	/*! Return all surfaces of this opening.*/
 	const std::vector<Surface>& surfaces() const;
 
+	/*! Repair authoring-tool-inflated opening bodies (WSHH: void extrusions padded
+		by exactly ±5m, producing 10m boxes through the building). Detects a body
+		whose extent along its extrusion axis is implausible for a wall void, finds
+		the INTERIOR vertex stations (the true wall slab survives as intermediate
+		vertices), and injects the two cross-section faces there as ST_ProbableSide
+		while demoting the inflated faces to ST_UnProbableSide — the per-face opening
+		matcher then works with the true window planes. No-op for plausible bodies.
+	*/
+	void repairOversizedBody();
+
+	/*! Return the original triangulated opening solid (from the IFC-to-carve conversion).*/
+	const meshVector_t& originalMesh() const {
+		return m_originalMesh;
+	}
+
 	/*! Return all surfaces created by CSG intersection with construction of this opening.*/
 	const std::vector<Surface>& surfacesCSGElement() const;
 
@@ -61,11 +76,20 @@ public:
 	/*! Add all ids from the containing element ids vector to the end of the given one.*/
 	void insertContainingElementId(std::vector<int>& other) const;
 
-	/*! Set the connected space boundary.*/
-	void setSpaceBoundary(std::shared_ptr<SpaceBoundary> sb);
+	/*! Add a connected space boundary. An internal door/window connects two rooms
+		and collects one opening space boundary per room side.*/
+	void addSpaceBoundary(std::shared_ptr<SpaceBoundary> sb);
 
-	/*! Return true if the opening is already connected to a space boundary.*/
+	/*! Return true if the opening is connected to at least one space boundary.*/
 	bool hasSpaceBoundary() const;
+
+	/*! Return true if the opening already has a space boundary in the space with the given GUID.
+		Used by the per-space matching so a second room sharing the same wall can still
+		attach this opening, while the same room never attaches it twice.*/
+	bool hasSpaceBoundaryInSpace(const std::string& spaceGuid) const;
+
+	/*! All space boundaries this opening is attached to (one per room side). */
+	const std::vector<std::shared_ptr<SpaceBoundary>>& spaceBoundaries() const { return m_spaceBoundaries; }
 
 	/*! Get the vector of opening construction ids connected to this opening.*/
 	const std::vector<int>& openingElementIds() const;
@@ -128,8 +152,8 @@ private:
 	/*! Vector of ids of construction elements (wall, roof or slab) which contains this opening (should only be one).*/
 	std::vector<int>				m_containedInElementIds;
 
-	/*! Connected space boundary.*/
-	std::shared_ptr<SpaceBoundary>	m_spaceBoundary;
+	/*! Connected space boundaries — one per room side seeing this opening.*/
+	std::vector<std::shared_ptr<SpaceBoundary>>	m_spaceBoundaries;
 
 	/*! Original 3D mesh from conversion IFC to carve.*/
 	meshVector_t					m_originalMesh;

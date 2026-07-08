@@ -17,6 +17,8 @@
 
 #include <VICUS_Project.h>
 
+#include <VicIFC_Model.h>
+
 #include "IFCC_GeometryConverter.h"
 #include "IFCC_Types.h"
 #include "IFCC_Project.h"
@@ -26,6 +28,8 @@
 #include "IFCC_BuildingElementsCollector.h"
 
 namespace IFCC {
+
+class ProgressHandler;
 
 /*! Main class for IFC reading and conversion int vicus model.*/
 class IFCReader : public QObject {
@@ -130,6 +134,12 @@ public:
 	/*! Build a VICUS::Project from the current converted data.*/
 	VICUS::Project buildVicusProject() const;
 
+	/*! Raw IFC model (all building elements with their original triangulated mesh,
+		metadata and property sets), populated during convert() via buildIFCModel().
+		Independent of the VICUS conversion; intended for rendering/serialization of
+		the original IFC geometry.*/
+	const VicIFC::Model& ifcModel() const { return m_ifcModel; }
+
 	/*! Write converted data as vicus file.*/
 	void writeXML(const IBK::Path & filename) const;
 
@@ -233,6 +243,16 @@ private:
 	*/
 	void updateBuildingElements(IBK::NotificationHandler* notify = nullptr);
 
+	/*! Populate m_ifcModel with one VicIFC::IFCObject per building element,
+		carrying its original triangulated mesh, GUID/type/name and property sets.
+		Must be called after updateBuildingElements() (needs m_originalMesh filled).*/
+	void buildIFCModel();
+
+	/*! Append geometry-less spatial-structure objects (site/building/storey) to the IFC
+		model and set element parent ids (storey containment, or containing wall for
+		windows/doors). Must run after updateStoreys (m_site populated). */
+	void updateIFCModelTopology();
+
 	IBK::Path						m_filename;				///< IFC file
 	std::shared_ptr<BuildingModel>	m_model;				///< IFC model created from file
 	RepairFlags						m_repairFlags;			///< Contains all flags and parameter for IFC repair
@@ -273,6 +293,8 @@ private:
 	Database											m_database;
 	/*! Handler class for all component instances. Such a instance is a connection of components and surfaces from spaces.*/
 	Instances											m_instances;
+	/*! Raw IFC model built by buildIFCModel(): all building elements with original mesh geometry and metadata.*/
+	VicIFC::Model										m_ifcModel;
 	/*! Vector of errors while converting.*/
 	std::vector<ConvertError>							m_convertErrors;
 	/*! Elements which are used for creating space boundaries.*/
@@ -301,6 +323,15 @@ private:
 	void checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* notify = nullptr);
 
 	bool		m_useSpaceBoundaries = true;
+
+	/*! Active sub-range progress relay used by messageTarget() to forward
+		StatusCallback PROGRESS_VALUE events from ifcplusplus (ReaderSTEP parser,
+		GeometryConverter) to the parent IBK::NotificationHandler. Set during the
+		long-running parse and convertGeometry() calls so the GUI thread keeps
+		pumping QApplication::processEvents() and the progress dialog stays alive.
+		Pointer to a stack-allocated ProgressHandler in read()/convert(); nullptr
+		outside those windows. */
+	ProgressHandler*	m_currentSubProgress = nullptr;
 
 };
 

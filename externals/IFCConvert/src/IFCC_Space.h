@@ -169,6 +169,18 @@ public:
 		std::vector<ConvertError>& errors,
 		const ConvertOptions& convertOptions);
 
+	/*! Link Openings to the opening space boundaries attached to this space's
+		construction SBs (IFC space-boundary path). Only links when the resulting
+		SubSurface would survive the write-time validation in getVicusSurface, so
+		unlinked openings remain available for the cross-space fallback.
+		MUST be called sequentially (writes into the shared openings vector) —
+		called from BuildingStorey::updateSpaces AFTER the parallel per-space phase.
+		\param buildingElements Collector of all building elements (read-only).
+		\param openings Vector of all openings (shared mutable state).
+	*/
+	void linkOpeningsToSpaceBoundaries(const BuildingElementsCollector& buildingElements,
+									   std::vector<Opening>& openings);
+
 	/*! Return all space boundaries of this space.*/
 	const std::vector<std::shared_ptr<SpaceBoundary>>& spaceBoundaries() const;
 
@@ -180,7 +192,21 @@ public:
 		std::shared_ptr<BuildingElement>  openingElem;
 		Surface                           mergedSurface;
 		double                            area = -1.0;
+		/*! Plane distance opening body <-> SB [m]. Tie-breaker between parallel
+			wall layers (Gipsputz vs. Gipskarton) that both intersect the full
+			window outline: the layer closest to the opening wins. */
+		double                            dist = 1e20;
 	};
+
+	/*! Compare two opening-match candidates: larger intersection area wins, but
+		ranking areas are clamped to the opening element's own area (broken opening
+		bodies with duplicate faces produce doubled merge areas), and at (near) equal
+		rank area the smaller plane distance wins. Used by the per-space selection
+		AND the cross-space fallback in Building::updateStoreys so both apply
+		identical semantics.
+		\return True if cand should replace best.
+	*/
+	static bool isBetterOpeningMatch(const OpeningMatchCandidate& cand, const OpeningMatchCandidate& best);
 
 	/*! Find the best-area match for the given opening among this space's own
 		construction SBs, without committing. Returns an empty candidate (area < 0)
@@ -282,7 +308,8 @@ private:
 		\param buildingElements Vector of all building elements (wall, roof, slab, window, door etc.)
 	*/
 	void evaluateSpaceBoundaryTypes(const objectShapeTypeVector_t& shapes,
-									 const BuildingElementsCollector& buildingElements);
+									 const BuildingElementsCollector& buildingElements,
+									 const ConvertOptions& convertOptions);
 
 	/*! Is called from evaluateSpaceBoundaryFromIFC.
 		It get geometry for space boundaries and fill their temporary surface vector.
@@ -304,10 +331,18 @@ private:
 	*/
 	bool evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 									  const BuildingElementsCollector& buildingElements,
-									  std::vector<Opening>& openings,
 									  shared_ptr<UnitConverter>& unit_converter,
 									  std::vector<ConvertError>& errors,
 									  const ConvertOptions& convertOptions);
+
+	/*! Re-anchor IFC-authored space boundaries onto the space's own solid shell
+		(m_surfacesOrg) and fill uncovered shell parts with "Missing" SBs.
+		Heals plane offsets up to convertOptions.m_shellSnapTolerance and closes
+		the room volume even for incomplete authored SB sets. Only called from
+		evaluateSpaceBoundaryFromIFC (the construction-matching path derives its
+		SBs from the shell already).
+	*/
+	void anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions);
 
 	/*! Is called from updateSpaceBoundaries in case IFC model doesn't contain space boundaries.
 		It try to evaluate space boundaries from construction elements and openings.

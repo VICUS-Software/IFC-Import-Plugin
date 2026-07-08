@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <atomic>
 #include <deque>
 #include <limits>
 #include <map>
@@ -103,8 +105,29 @@ void Space::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std::v
 
 	m_meshSets = meshSetsFromBodyRepresentation(productShape);
 
-	if(m_surfacesOrg.empty())
-		return;
+	if(m_surfacesOrg.empty()) {
+		// Diagnose why the space solid is missing — these rooms cannot be anchored
+		// or orientation-fixed and stay red in the VICUS room validation.
+		size_t nReps = productShape->m_vec_representations.size();
+		size_t nItems = 0, nMeshsets = 0, nOpen = 0;
+		std::string repIds;
+		for(const auto& rep : productShape->m_vec_representations) {
+			if(!rep) continue;
+			if(!repIds.empty()) repIds += ",";
+			repIds += rep->m_representation_identifier;
+			nItems += rep->m_vec_item_data.size();
+			for(const auto& item : rep->m_vec_item_data) {
+				nMeshsets += item->m_meshsets.size();
+				nOpen += item->m_meshsets_open.size();
+			}
+		}
+		Logger::instance() << "Space::fetchGeometry: NO-SHELL space=" << m_id
+						   << " ifcTag=#" << m_ifcId
+						   << " name='" << m_name << "'"
+						   << " reps=" << nReps << " [" << repIds << "]"
+						   << " items=" << nItems
+						   << " meshsets=" << nMeshsets << " open=" << nOpen;
+	}
 }
 
 
@@ -145,6 +168,76 @@ static bool divideSurface(const Surface::IntersectionResult& intRes, std::vector
 		spaceSurfaces.push_back(diffSurfaces[i]);
 	}
 	return false;
+}
+
+/*! True if the polygon contains the same vertex twice at non-adjacent positions
+	(self-touching ring). The CDT triangulation rejects such polygons with a
+	"Duplicate vertex detected" exception — VICUS then cannot triangulate the
+	surface at all. Adjacent duplicates are handled by cleanPolygon. */
+static bool hasNonAdjacentDuplicateVertex(const polygon3D_t& poly, double eps = 1e-8) {
+	const size_t n = poly.size();
+	for(size_t i=0; i<n; ++i) {
+		for(size_t j=i+2; j<n; ++j) {
+			if(i == 0 && j == n-1)
+				continue; // first and last are neighbors via the closing edge
+			if(std::fabs(poly[i].m_x-poly[j].m_x) < eps &&
+			   std::fabs(poly[i].m_y-poly[j].m_y) < eps &&
+			   std::fabs(poly[i].m_z-poly[j].m_z) < eps)
+				return true;
+		}
+	}
+	return false;
+}
+
+/*! Unnormalized Newell normal of a polygon (orientation-sensitive). */
+static IBKMK::Vector3D newellNormal(const polygon3D_t& poly) {
+	IBKMK::Vector3D n(0,0,0);
+	const size_t cnt = poly.size();
+	for(size_t i=0; i<cnt; ++i) {
+		const IBKMK::Vector3D& a = poly[i];
+		const IBKMK::Vector3D& b = poly[(i+1)%cnt];
+		n.m_x += (a.m_y - b.m_y) * (a.m_z + b.m_z);
+		n.m_y += (a.m_z - b.m_z) * (a.m_x + b.m_x);
+		n.m_z += (a.m_x - b.m_x) * (a.m_y + b.m_y);
+	}
+	return n;
+}
+
+/*! Return the surface with its winding aligned to the given reference normal
+	(rebuilt with reversed vertex order when the Newell normal points the other
+	way, so the cached plane data stays consistent with the vertex order).
+	Clipper output has arbitrary winding — VICUS computes the room volume from
+	oriented surfaces, and mixed orientations blow the volume up beyond the
+	bounding box ("Volume inconsistency" -> room status error). Must be applied
+	BEFORE holes/subsurfaces are attached (their 2D coordinates depend on the
+	parent plane orientation). */
+static Surface alignedWinding(const Surface& s, const IBKMK::Vector3D& refNormal) {
+	IBKMK::Vector3D n = newellNormal(s.polygon());
+	double dot = n.m_x*refNormal.m_x + n.m_y*refNormal.m_y + n.m_z*refNormal.m_z;
+	if(dot >= 0.0)
+		return s;
+	polygon3D_t rev(s.polygon().rbegin(), s.polygon().rend());
+	return Surface(rev);
+}
+
+/*! Mean width of a polygon (4*A/U — exact for rectangles). Clipper residuals along
+	wall junctions are often millimeter-wide strips; they survive area thresholds
+	(5 m x 5 mm = 0.025 m2) but collapse under the XML coordinate rounding, producing
+	surfaces VICUS rejects at read time ("Error reading Polygon3D") — visible as
+	rooms with missing faces. */
+static double meanPolygonWidth(const Surface& s) {
+	const polygon3D_t& poly = s.polygon();
+	if(poly.size() < 3)
+		return 0.0;
+	double perimeter = 0.0;
+	for(size_t i=0; i<poly.size(); ++i) {
+		const IBKMK::Vector3D& a = poly[i];
+		const IBKMK::Vector3D& b = poly[(i+1) % poly.size()];
+		perimeter += std::sqrt((a.m_x-b.m_x)*(a.m_x-b.m_x) + (a.m_y-b.m_y)*(a.m_y-b.m_y) + (a.m_z-b.m_z)*(a.m_z-b.m_z));
+	}
+	if(perimeter <= 0.0)
+		return 0.0;
+	return 4.0 * s.area() / perimeter;
 }
 
 /*! Struct contains result of the function findFirstSurfaceMatchIndex.
@@ -489,6 +582,14 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 	std::vector<std::shared_ptr<SpaceBoundary>> spaceBoundaries;
 	std::vector<std::shared_ptr<BuildingElement>> constructionElements = buildingElements.allConstructionElements();
 
+	// Per-slot reference normal (from the original carve space face, which is
+	// consistently oriented outward). All emitted SBs align their winding to it —
+	// clipper output has arbitrary winding and mixed orientations make VICUS'
+	// room volume inconsistent (matcher-path counterpart of the anchoring fix).
+	std::vector<IBKMK::Vector3D> slotNormal(surfaces.size());
+	for(size_t i=0; i<surfaces.size(); ++i)
+		slotNormal[i] = newellNormal(surfaces[i].polygon());
+
 	ConvertOptions::ConstructionMatching matchType = convertOptions.m_matchingType;
 
 	if(matchType != ConvertOptions::CM_NoMatching) {
@@ -512,11 +613,21 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 		// the user expects to see in the 3D view, rather than the bare wall.
 		const bool partMatchingEnabled = convertOptions.hasElementsForSpaceBoundaries(BET_BuildingElementPart);
 		std::set<std::string> wallGuidsWithParts;
+		std::set<std::string> excludedPartGuids;
 		if(partMatchingEnabled) {
 			for(const auto& construction : constructionElements) {
-				if(construction->type() != BET_Wall || !construction->hasElementParts())
+				if(!construction->hasElementParts())
 					continue;
-				wallGuidsWithParts.insert(construction->m_guid);
+				if(construction->type() == BET_Wall)
+					wallGuidsWithParts.insert(construction->m_guid);
+				// Parts of excluded parents must not enter the envelope either: steel
+				// columns with EPS fire casing (WSHH 'S-T-I | Profil' with 'EPS 1'/
+				// 'Stahl lackiert' parts) otherwise spray dozens of interior fragments
+				// into the room shell although columns themselves are excluded.
+				if(construction->type() == BET_Column) {
+					for(const auto& p : construction->elementParts())
+						excludedPartGuids.insert(guidFromObject(p.get()));
+				}
 			}
 		}
 
@@ -524,6 +635,12 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			const auto& construction = constructionElements[ci];
 			BuildingElementTypes type = construction->type();
 			if(!convertOptions.hasElementsForSpaceBoundaries(type))
+				continue;
+			// Columns never become part of the room envelope (see evaluateSpaceBoundaryTypes).
+			if(type == BET_Column)
+				continue;
+			// Same for their aggregated parts (EPS casing etc.).
+			if(type == BET_BuildingElementPart && excludedPartGuids.count(construction->m_guid))
 				continue;
 			// Drop walls whose layer-parts are also matched — keeps openings from
 			// attaching to the bare wall when the parts carry the visible surface.
@@ -648,7 +765,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			// CM_MatchOnlyFirstConstruction: one SB for the whole remaining surface, no subdivision.
 			if(convertOptions.m_matchingType == ConvertOptions::CM_MatchOnlyFirstConstruction) {
 				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
-															  *this, surfaces[ssi], convertOptions));
+															  *this, alignedWinding(surfaces[ssi], slotNormal[ssi]), convertOptions));
 				surfaces[ssi].setNewPolygon({});
 				continue;
 			}
@@ -659,7 +776,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 					&& (matchCount[ssi] >= PER_SURFACE_MAX);
 			if(finalBudgetReached) {
 				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
-															  *this, surfaces[ssi], convertOptions));
+															  *this, alignedWinding(surfaces[ssi], slotNormal[ssi]), convertOptions));
 				surfaces[ssi].setNewPolygon({});
 				continue;
 			}
@@ -670,7 +787,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			if(intersectionResult.m_intersections.size() == 1
 					&& IBK::nearly_equal<2>(firstISurf.area(), spaceArea)) {
 				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
-															  *this, firstISurf, convertOptions));
+															  *this, alignedWinding(firstISurf, slotNormal[ssi]), convertOptions));
 				surfaces[ssi].setNewPolygon({});
 				continue;
 			}
@@ -678,7 +795,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			// Partial coverage: emit SB per intersection, subdivide, enqueue residuals.
 			for(const Surface& surf : intersectionResult.m_intersections)
 				spaceBoundaries.push_back(createSpaceBoundary(constr, matchStub, bestConstrSurfaceIndex,
-															  *this, surf, convertOptions));
+															  *this, alignedWinding(surf, slotNormal[ssi]), convertOptions));
 
 			std::vector<Surface> holeSubsurfaces;
 			size_t nSurfacesBefore = surfaces.size();
@@ -693,8 +810,11 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				int parentCount = matchCount[ssi];
 				if(matchCount.size() < surfaces.size())
 					matchCount.resize(surfaces.size(), parentCount);
+				if(slotNormal.size() < surfaces.size())
+					slotNormal.resize(surfaces.size(), slotNormal[ssi]);
 				for(size_t newIdx = nSurfacesBefore; newIdx < surfaces.size(); ++newIdx) {
 					matchCount[newIdx] = parentCount;
+					slotNormal[newIdx] = slotNormal[ssi];
 					workQueue.push_back(newIdx);
 				}
 				// The parent slot itself now holds a residual — requeue it for further matching.
@@ -709,31 +829,48 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching hit iteration cap — some surfaces may be marked missing"});
 	}
 
-	for(const Surface& surf : surfaces) {
+	for(size_t si=0; si<surfaces.size(); ++si) {
+		const Surface& surf = surfaces[si];
 		if(surf.area() < convertOptions.m_minimumSurfaceArea)
 			continue;
 
 		std::shared_ptr<SpaceBoundary> sb = std::shared_ptr<SpaceBoundary>(new SpaceBoundary(GUID_maker::instance().guid()));
 		std::string name = "Missing";
 		sb->setForMissingElement(name, *this, false);
-		sb->fetchGeometryFromBuildingElement(surf, convertOptions);
+		sb->fetchGeometryFromBuildingElement(
+			si < slotNormal.size() ? alignedWinding(surf, slotNormal[si]) : surf, convertOptions);
 		spaceBoundaries.push_back(sb);
 	}
 
 	return spaceBoundaries;
 }
 
+/*! Opening id selected via IFCC_DEBUG_OPENING_ID environment variable: all match
+	attempts for this opening are logged unthrottled with reject reasons. -1 = off. */
+static int debugOpeningId() {
+	static int id = [](){
+		const char* e = std::getenv("IFCC_DEBUG_OPENING_ID");
+		return e ? std::atoi(e) : -1;
+	}();
+	return id;
+}
+
 static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const std::shared_ptr<SpaceBoundary> spaceBoundary,
 									  const ConvertOptions& convertOptions, double maxDistance,
-									  bool allowCoplanarAccept = false) {
+									  bool allowCoplanarAccept = false, bool debug = false) {
 	// NOTE: an AABB prefilter was tried here but removed — opening polygons and wall SBs
 	// that legitimately contain each other can have surprising AABB gaps (very thin openings,
 	// inconsistent coordinate conventions), and the distanceToParallelPlane test below is
 	// already cheap enough that the prefilter is not worth the risk of silently dropping windows.
 
 	double dist = currentOpeningSurf.distanceToParallelPlane(spaceBoundary->surface(), convertOptions.m_distanceEps);
-	if(dist > maxDistance)
+	if(dist > maxDistance) {
+		if(debug)
+			Logger::instance() << "  dbg-open: REJECT dist=" << dist << " > " << maxDistance
+							   << " sb='" << spaceBoundary->m_name << "' sbArea=" << spaceBoundary->surface().area()
+							   << " openSurfArea=" << currentOpeningSurf.area();
 		return Surface();
+	}
 
 	Surface intersectionResult = spaceBoundary->surface().intersect(currentOpeningSurf);
 	if(!intersectionResult.isValid(convertOptions.m_distanceEps)) {
@@ -759,6 +896,16 @@ static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const s
 							   << " sbArea=" << sbArea;
 			return currentOpeningSurf;
 		}
+		if(debug) {
+			const IBKMK::Vector3D& sc = spaceBoundary->surface().centroid();
+			const IBKMK::Vector3D& oc = currentOpeningSurf.centroid();
+			Logger::instance() << "  dbg-open: REJECT empty-intersection dist=" << dist
+							   << " sb='" << spaceBoundary->m_name << "' sbArea=" << sbArea
+							   << " sbC=(" << sc.m_x << "," << sc.m_y << "," << sc.m_z << ")"
+							   << " openSurfArea=" << openingArea
+							   << " opC=(" << oc.m_x << "," << oc.m_y << "," << oc.m_z << ")"
+							   << " coplanarAccept=" << allowCoplanarAccept;
+		}
 		return Surface();
 	}
 
@@ -780,6 +927,9 @@ static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const s
 		return Surface();
 	}
 
+	if(debug)
+		Logger::instance() << "  dbg-open: MATCH dist=" << dist
+						   << " sb='" << spaceBoundary->m_name << "' interArea=" << interArea;
 	return intersectionResult;
 }
 
@@ -789,6 +939,35 @@ static Surface mergeSurfaces(const std::vector<Surface>& surfaces, double eps) {
 		res.mergeOnlyThanPlanar(surfaces[i], eps);
 	}
 	return res;
+}
+
+/*! 2D convex hull (Andrew's monotone chain), CCW, without repeated last point. */
+static std::vector<IBKMK::Vector2D> convexHull2D(std::vector<IBKMK::Vector2D> pts) {
+	if(pts.size() < 3)
+		return pts;
+	std::sort(pts.begin(), pts.end(), [](const IBKMK::Vector2D& a, const IBKMK::Vector2D& b){
+		return a.m_x < b.m_x || (a.m_x == b.m_x && a.m_y < b.m_y);
+	});
+	pts.erase(std::unique(pts.begin(), pts.end(), [](const IBKMK::Vector2D& a, const IBKMK::Vector2D& b){
+		return std::fabs(a.m_x-b.m_x) < 1e-9 && std::fabs(a.m_y-b.m_y) < 1e-9;
+	}), pts.end());
+	if(pts.size() < 3)
+		return pts;
+	auto cross = [](const IBKMK::Vector2D& o, const IBKMK::Vector2D& a, const IBKMK::Vector2D& b){
+		return (a.m_x-o.m_x)*(b.m_y-o.m_y) - (a.m_y-o.m_y)*(b.m_x-o.m_x);
+	};
+	std::vector<IBKMK::Vector2D> hull(2*pts.size());
+	size_t k = 0;
+	for(size_t i=0; i<pts.size(); ++i) {
+		while(k >= 2 && cross(hull[k-2], hull[k-1], pts[i]) <= 0) --k;
+		hull[k++] = pts[i];
+	}
+	for(size_t i=pts.size()-1, t=k+1; i>0; --i) {
+		while(k >= t && cross(hull[k-2], hull[k-1], pts[i-1]) <= 0) --k;
+		hull[k++] = pts[i-1];
+	}
+	hull.resize(k-1);
+	return hull;
 }
 
 static bool addOpeningSpaceBoundary(const Surface& surface, Opening& currOp, const std::shared_ptr<SpaceBoundary> spaceBoundary, std::shared_ptr<BuildingElement> openingElem,
@@ -806,7 +985,7 @@ static bool addOpeningSpaceBoundary(const Surface& surface, Opening& currOp, con
 		sb->m_openingId = currOp.m_id;
 		sb->fetchGeometryFromBuildingElement(surface, convertOptions);
 		openingSpaceBoundaries.push_back(sb);
-		currOp.setSpaceBoundary(sb);
+		currOp.addSpaceBoundary(sb);
 	}
 	else {
 		std::string name = spaceName + spaceBoundary->m_name+ ":" + ": breakout - O" +
@@ -816,7 +995,7 @@ static bool addOpeningSpaceBoundary(const Surface& surface, Opening& currOp, con
 		sb->m_openingId = currOp.m_id;
 		sb->fetchGeometryFromBuildingElement(surface, convertOptions);
 		openingSpaceBoundaries.push_back(sb);
-		currOp.setSpaceBoundary(sb);
+		currOp.addSpaceBoundary(sb);
 	}
 	spaceBoundary->addContainedOpeningSpaceBoundaries(sb);
 	// we found a connection therfore we can end searching
@@ -832,7 +1011,7 @@ static bool addOpeningSpaceBoundary(const Surface& surface, Opening& currOp, con
 */
 static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr<SpaceBoundary>& spaceBoundary,
 										  const ConvertOptions& convertOptions, double maxDistance,
-										  bool allowCoplanarAccept = false) {
+										  bool allowCoplanarAccept = false, double* matchDist = nullptr) {
 	std::vector<Surface> openingSurfaces;
 	const std::vector<Surface>& openingSurfces = convertOptions.m_useCSGForOpenings && !currOp.surfacesCSGElement().empty() ? currOp.surfacesCSGElement() :
 																													   currOp.surfaces();
@@ -843,6 +1022,26 @@ static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr
 	double bestDistProbable = 1e20;
 	double bestDistFallback = 1e20;
 
+	// Debug tracing for one selected opening (IFCC_DEBUG_OPENING_ID): log near-miss
+	// candidates (parallel and within 2x search distance) unthrottled.
+	const bool dbg = (currOp.m_id == debugOpeningId());
+	if(dbg) {
+		static std::atomic<bool> headerDone(false);
+		if(!headerDone.exchange(true)) {
+			Logger::instance() << "dbg-open: opening id=" << currOp.m_id
+							   << " guid=" << currOp.guid()
+							   << " name='" << currOp.m_name << "'"
+							   << " nSurfaces=" << currOp.surfaces().size();
+			for(size_t i=0; i<currOp.surfaces().size() && i<40; ++i) {
+				const Surface& s = currOp.surfaces()[i];
+				const IBKMK::Vector3D& c = s.centroid();
+				Logger::instance() << "dbg-open:   surf[" << i << "] area=" << s.area()
+								   << " sideType=" << (int)s.sideType()
+								   << " centroid=(" << c.m_x << "," << c.m_y << "," << c.m_z << ")";
+			}
+		}
+	}
+
 	for(size_t cosi=0; cosi<openingSurfces.size(); ++cosi) {
 		const Surface& currentOpeningSurf = openingSurfces[cosi];
 		if(currentOpeningSurf.sideType() != Surface::ST_ProbableSide)
@@ -852,7 +1051,8 @@ static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr
 		if(d < bestDistProbable)
 			bestDistProbable = d;
 
-		Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance, allowCoplanarAccept);
+		Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance,
+											  allowCoplanarAccept, dbg && d < 2.0*maxDistance);
 		if(surf.isValid(convertOptions.m_distanceEps))
 			openingSurfaces.push_back(surf);
 	}
@@ -869,25 +1069,228 @@ static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr
 			if(d < bestDistFallback)
 				bestDistFallback = d;
 
-			Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance);
+			Surface surf = matchingOpeningSurface(currentOpeningSurf, spaceBoundary, convertOptions, maxDistance,
+												  false, dbg && d < 2.0*maxDistance);
 			if(surf.isValid(convertOptions.m_distanceEps))
 				openingSurfaces.push_back(surf);
 		}
 	}
+	if(openingSurfaces.empty() && !currOp.surfaces().empty()) {
+		// Whole-body projection fallback. Arched/curved opening bodies (WSHH round-arch
+		// windows are revolved solids) have NO planar face parallel to the wall — every
+		// per-face test above fails the parallelism gate. Project ALL body vertices onto
+		// the SB plane, build the 2D convex hull (= the opening outline as seen from the
+		// wall) and intersect it with the SB polygon.
+		const Surface& sbSurf = spaceBoundary->surface();
+		// Cheap AABB pre-gate: skip SBs nowhere near the opening body (this fallback
+		// runs for every candidate SB of every unmatched opening).
+		IBKMK::Vector3D omin(1e20,1e20,1e20), omax(-1e20,-1e20,-1e20);
+		for(const Surface& os : currOp.surfaces()) {
+			const IBKMK::Vector3D& a = os.aabbMin();
+			const IBKMK::Vector3D& b = os.aabbMax();
+			omin.m_x = std::min(omin.m_x, a.m_x); omin.m_y = std::min(omin.m_y, a.m_y); omin.m_z = std::min(omin.m_z, a.m_z);
+			omax.m_x = std::max(omax.m_x, b.m_x); omax.m_y = std::max(omax.m_y, b.m_y); omax.m_z = std::max(omax.m_z, b.m_z);
+		}
+		const IBKMK::Vector3D& smin = sbSurf.aabbMin();
+		const IBKMK::Vector3D& smax = sbSurf.aabbMax();
+		const double GAP = maxDistance;
+		bool aabbNear = omin.m_x <= smax.m_x + GAP && omax.m_x >= smin.m_x - GAP
+					 && omin.m_y <= smax.m_y + GAP && omax.m_y >= smin.m_y - GAP
+					 && omin.m_z <= smax.m_z + GAP && omax.m_z >= smin.m_z - GAP;
+		PlaneNormal plane(sbSurf.polygon());
+		if(aabbNear && plane.m_valid) {
+			IBKMK::Vector3D n = sbSurf.planeNormalVec();
+			const IBKMK::Vector3D& p0 = sbSurf.centroid();
+			double minAbsD = 1e20;
+			double maxAbsD = 0.0;
+			double minSignedD = 1e20;
+			double maxSignedD = -1e20;
+			std::vector<IBKMK::Vector2D> pts2;
+			for(const Surface& os : currOp.surfaces()) {
+				for(const IBKMK::Vector3D& v : os.polygon()) {
+					double ds = n.m_x*(v.m_x-p0.m_x) + n.m_y*(v.m_y-p0.m_y) + n.m_z*(v.m_z-p0.m_z);
+					double d = std::fabs(ds);
+					if(d < minAbsD)
+						minAbsD = d;
+					if(d > maxAbsD)
+						maxAbsD = d;
+					if(ds < minSignedD)
+						minSignedD = ds;
+					if(ds > maxSignedD)
+						maxSignedD = ds;
+					pts2.push_back(plane.convert3DPoint(v));
+				}
+			}
+			// The body must reach the SB plane region (closest vertex within search
+			// dist) AND be FLAT against the plane: projected onto the correct wall the
+			// perpendicular extent is just the wall/reveal depth, while a vertical
+			// window projected onto a floor slab spans its full height — that produced
+			// bogus window strips inside storey slabs ("Missing" ceiling SBs).
+			const double kMaxBodyDepth = 0.8; // [m] max wall depth incl. reveal
+			bool nearAndFlat = minAbsD <= maxDistance && (maxAbsD - minAbsD) <= kMaxBodyDepth;
+			// Through-going body: WSHH-class models extrude some IfcOpeningElement
+			// bodies meters through the room, so the wall plane cuts the box mid-way
+			// (no vertex is near the plane — nearAndFlat fails). Accept when the body
+			// clearly CROSSES the plane and its span ALONG the SB normal is a dominant
+			// dimension of the body (a through-wall extrusion crosses mostly along the
+			// normal). A vertical window box grazing a floor slab crosses the
+			// horizontal plane only over its height while being far longer in the
+			// blown-up extrusion direction — small ratio, stays excluded. NOTE: do not
+			// compare the longest AABB axis against the normal instead — window boxes
+			// are often TALLER than their extrusion depth (1.5x2.0m arch window with
+			// 1.74m extrusion), which made the longest axis the vertical one and
+			// wrongly rejected genuine through-wall crossings (align=0).
+			bool crosses = false;
+			if(!nearAndFlat && minSignedD < -maxDistance && maxSignedD > maxDistance) {
+				const double ex = omax.m_x - omin.m_x;
+				const double ey = omax.m_y - omin.m_y;
+				const double ez = omax.m_z - omin.m_z;
+				const double maxExtent = std::max(ex, std::max(ey, ez));
+				const double spanAlongNormal = maxSignedD - minSignedD;
+				double align = maxExtent > 1e-9 ? spanAlongNormal / maxExtent : 0.0;
+				crosses = align >= 0.7;
+				// A window/door box must never straddle-cut a near-HORIZONTAL surface:
+				// vertical openings live in walls — a box passing through a ceiling or
+				// floor fill (Missing) would punch a bogus hole into it (roughly cubic
+				// window bodies pass the span ratio above). Sloped roofs (skylights)
+				// stay allowed: |n_z| of a 45-degree roof is ~0.7.
+				if(crosses && std::fabs(n.m_z) > 0.75) {
+					crosses = false;
+					if(dbg)
+						Logger::instance() << "  dbg-open: HULL-CROSS reject horizontal SB sb='"
+										   << spaceBoundary->m_name << "' nz=" << n.m_z;
+				}
+				if(dbg)
+					Logger::instance() << "  dbg-open: HULL-CROSS check sb='" << spaceBoundary->m_name << "'"
+									   << " minSignedD=" << minSignedD << " maxSignedD=" << maxSignedD
+									   << " align=" << align << " -> " << (crosses ? "ACCEPT" : "reject");
+			}
+			if((nearAndFlat || crosses) && pts2.size() >= 3) {
+				std::vector<IBKMK::Vector2D> hull = convexHull2D(pts2);
+				if(hull.size() >= 3) {
+					polygon3D_t hullPoly;
+					for(const IBKMK::Vector2D& p : hull)
+						hullPoly.push_back(plane.convert3DPointInv(p));
+					Surface hullSurf(hullPoly);
+					double hullArea = hullSurf.area();
+					// Guards: real window/door outlines; oversized hulls are bogus geometry.
+					if(hullArea >= 0.05 && hullArea <= 40.0) {
+						Surface inter = sbSurf.intersect(hullSurf);
+						if(inter.isValid(convertOptions.m_distanceEps)) {
+							double ia = inter.area();
+							double minInput = std::min(hullArea, sbSurf.area());
+							if(minInput > 0.0 && ia/minInput >= 0.10) {
+								if(dbg)
+									Logger::instance() << "  dbg-open: MATCH-HULL minAbsD=" << minAbsD
+													   << " sb='" << spaceBoundary->m_name << "'"
+													   << " hullArea=" << hullArea << " interArea=" << ia;
+								if(minAbsD < bestDistFallback)
+									bestDistFallback = minAbsD;
+								openingSurfaces.push_back(inter);
+							}
+							else if(dbg) {
+								Logger::instance() << "  dbg-open: REJECT hull-thin-strip minAbsD=" << minAbsD
+												   << " sb='" << spaceBoundary->m_name << "'"
+												   << " hullArea=" << hullArea << " interArea=" << ia;
+							}
+						}
+						else if(dbg) {
+							Logger::instance() << "  dbg-open: REJECT hull-empty minAbsD=" << minAbsD
+											   << " sb='" << spaceBoundary->m_name << "'"
+											   << " sbArea=" << sbSurf.area() << " hullArea=" << hullArea;
+						}
+					}
+				}
+			}
+		}
+	}
 	if(openingSurfaces.empty()) {
-		Logger::instance() << "computeOpeningMatchSurface: NO-MATCH"
-						   << " opening id=" << currOp.m_id
-						   << " name='" << currOp.m_name << "'"
-						   << " sb='" << spaceBoundary->m_name << "'"
-						   << " maxDistance=" << maxDistance
-						   << " probableSideTried=" << probableSideTried
-						   << " bestDistProbable=" << bestDistProbable
-						   << " fallbackTried=" << fallbackTried
-						   << " bestDistFallback=" << bestDistFallback
-						   << " sbSurfaceArea=" << spaceBoundary->surface().area();
+		// Throttle: WSHH-class models emit this for every opening x space boundary pair,
+		// producing multi-GB step logs. Log the first 200 occurrences, then only every
+		// 10000th as a heartbeat.
+		static std::atomic<long> noMatchCount(0);
+		const long n = ++noMatchCount;
+		if(n <= 200 || n % 10000 == 0) {
+			Logger::instance() << "computeOpeningMatchSurface: NO-MATCH"
+							   << " opening id=" << currOp.m_id
+							   << " name='" << currOp.m_name << "'"
+							   << " sb='" << spaceBoundary->m_name << "'"
+							   << " maxDistance=" << maxDistance
+							   << " probableSideTried=" << probableSideTried
+							   << " bestDistProbable=" << bestDistProbable
+							   << " fallbackTried=" << fallbackTried
+							   << " bestDistFallback=" << bestDistFallback
+							   << " sbSurfaceArea=" << spaceBoundary->surface().area()
+							   << (n == 200 ? " [further NO-MATCH lines throttled: 1 per 10000]" : "")
+							   << (n > 200 ? " [throttled sample]" : "");
+		}
 		return Surface();
 	}
+	if(matchDist != nullptr)
+		*matchDist = std::min(bestDistProbable, bestDistFallback);
 	return mergeSurfaces(openingSurfaces, convertOptions.m_distanceEps);
+}
+
+/*! Distance from the opening ELEMENT's (window/door frame) geometry center to the
+	centroid of the matched surface patch [m]. WSHH-class models extrude
+	IfcOpeningElement bodies through the whole room (7m boxes with the window
+	outline on BOTH end faces and huge side faces running along partition walls),
+	so bogus matches appear far from the actual window. The filling element sits at
+	the true position — its distance to the matched PATCH separates the real wall
+	from the phantom one. (Distance to the SB *plane* is useless here: the phantom
+	partition plane runs alongside the box, so even the true window is near it.)
+	Returns 1e20 when no element geometry is available.
+*/
+static double openingElemDistanceToMatch(const std::shared_ptr<BuildingElement>& openingElem,
+										 const Surface& matchedSurface, const Opening* opening = nullptr) {
+	IBKMK::Vector3D c;
+	bool have = false;
+	// Priority: real element geometry (surfaces/mesh) > opening body centroid >
+	// element placement point. WSHH windows without any representation get a
+	// placement point of (0,0,0) (ifcpp never resolves the placement transform for
+	// representation-less products) — the opening void body is at the true window
+	// location and even for the symmetrically blown-up boxes its centroid stays
+	// near the real wall.
+	if(openingElem && openingElem->hasGeometricCenterFromGeometry(c))
+		have = true;
+	if(!have && opening != nullptr) {
+		IBKMK::Vector3D mn(1e20,1e20,1e20), mx(-1e20,-1e20,-1e20);
+		for(const Surface& os : opening->surfaces()) {
+			const IBKMK::Vector3D& a = os.aabbMin();
+			const IBKMK::Vector3D& b = os.aabbMax();
+			mn.m_x = std::min(mn.m_x, a.m_x); mn.m_y = std::min(mn.m_y, a.m_y); mn.m_z = std::min(mn.m_z, a.m_z);
+			mx.m_x = std::max(mx.m_x, b.m_x); mx.m_y = std::max(mx.m_y, b.m_y); mx.m_z = std::max(mx.m_z, b.m_z);
+			have = true;
+		}
+		if(have)
+			c.set((mn.m_x+mx.m_x)*0.5, (mn.m_y+mx.m_y)*0.5, (mn.m_z+mx.m_z)*0.5);
+	}
+	if(!have && openingElem && openingElem->geometricCenter(c))
+		have = true;
+	if(!have)
+		return 1e20;
+	const IBKMK::Vector3D& mc = matchedSurface.centroid();
+	return (c - mc).magnitude();
+}
+
+bool Space::isBetterOpeningMatch(const OpeningMatchCandidate& cand, const OpeningMatchCandidate& best) {
+	if(!cand.parentSB || cand.area <= 0.0)
+		return false;
+	if(!best.parentSB || best.area <= 0.0)
+		return true;
+	double areaCap = 1e20;
+	if(cand.openingElem) {
+		double elemArea = cand.openingElem->openingArea();
+		if(elemArea > 0.1)
+			areaCap = elemArea;
+	}
+	const double rankArea = std::min(cand.area, areaCap);
+	const double bestRankArea = std::min(best.area, areaCap);
+	if(rankArea > bestRankArea * 1.05)
+		return true;
+	if(rankArea > bestRankArea * 0.95 && cand.dist < best.dist)
+		return true;
+	return false;
 }
 
 void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std::shared_ptr<SpaceBoundary>>& spaceBoundaries,
@@ -945,14 +1348,47 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		if(!trace.triedSbNames.empty())
 			trace.triedSbNames += ", ";
 		trace.triedSbNames += sb->m_name;
-		Surface merged = computeOpeningMatchSurface(currOp, sb, convertOptions, searchDist);
+		double matchDist = 1e20;
+		Surface merged = computeOpeningMatchSurface(currOp, sb, convertOptions, searchDist, false, &matchDist);
 		if(!merged.isValid(convertOptions.m_distanceEps))
 			return;
 		++trace.validMatches;
 		double area = merged.area();
+		// Sanity: reject candidates wildly larger than the window/door itself —
+		// broken opening geometry (curved bodies with bogus face areas) can produce
+		// wall-sized "matches" that overwrite the room's facade with one SubSurface.
+		if(openingElem) {
+			double elemArea = openingElem->openingArea();
+			if(elemArea > 0.1 && area > 3.0 * elemArea) {
+				Logger::instance() << "space-openings: REJECT oversized candidate opening id=" << currOp.m_id
+								   << " name='" << currOp.m_name << "' area=" << area
+								   << " elementArea=" << elemArea << " sb='" << sb->m_name << "'";
+				return;
+			}
+		}
 		auto it = bestByOp.find(currOp.m_id);
-		if(it == bestByOp.end() || area > it->second.area) {
-			bestByOp[currOp.m_id] = {sb, openingElem, merged, area};
+		double elemDist = openingElemDistanceToMatch(openingElem, merged, &currOp);
+		if(currOp.m_id == debugOpeningId()) {
+			Logger::instance() << "  dbg-open: CANDIDATE sb='" << sb->m_name << "' area=" << area
+							   << " elemDist=" << elemDist
+							   << " elemSurfaces=" << (openingElem ? (int)openingElem->surfaces().size() : -1);
+		}
+		if(elemDist < 1e19) {
+			// Hard gate: a window/door cannot sit meters away from the surface patch
+			// it is supposedly mounted in. Kills matches of an opening box's side
+			// face sliced along a partition wall far from the actual window.
+			const double kMaxElemDist = 2.0;
+			if(elemDist > kMaxElemDist) {
+				Logger::instance() << "space-openings: REJECT far-element opening id=" << currOp.m_id
+								   << " name='" << currOp.m_name << "' elemDist=" << elemDist
+								   << " sb='" << sb->m_name << "' area=" << area;
+				return;
+			}
+			matchDist = elemDist;
+		}
+		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist};
+		if(it == bestByOp.end() || isBetterOpeningMatch(cand, it->second)) {
+			bestByOp[currOp.m_id] = cand;
 		}
 	};
 
@@ -980,8 +1416,10 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			if(fitOp == openings.end())
 				continue;
 			Opening& currOp = *fitOp;
-			if(currOp.hasSpaceBoundary())
-				continue; // already linked via IFC relations
+			// Per-space check: an internal door/window connects two rooms and must be
+			// matchable in BOTH — only skip when this space already attached it.
+			if(currOp.hasSpaceBoundaryInSpace(m_guid))
+				continue; // already linked in this space (e.g. via IFC relations)
 
 			considerCandidate(currOp, spaceBoundary, resolveOpeningElem(currOp), searchDist);
 		}
@@ -990,15 +1428,20 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 	// Pass 1b: opening-first iteration for openings not matched above — try every SB
 	// whose building element explicitly lists this opening in m_containedOpenings.
 	for(Opening& currOp : openings) {
-		if(currOp.hasSpaceBoundary())
+		if(currOp.hasSpaceBoundaryInSpace(m_guid))
 			continue;
 		if(bestByOp.count(currOp.m_id))
 			continue; // already has a candidate from pass 1a
 
 		for(const auto& spaceBoundary : spaceBoundaries) {
-			if(!spaceBoundary->isConstructionElement())
+			// Virtual SBs are valid opening parents too: WSHH-class models author the
+			// facade of rooms whose wall has only an axis representation as a VIRTUAL
+			// space boundary — the windows in that facade must attach to it.
+			if(!spaceBoundary->isConstructionElement() && !spaceBoundary->isVirtual())
 				continue;
-			if(convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
+			// Virtual SBs bypass the type blocklist (their related type is
+			// BET_VirtualElement/BET_None, which the blocklist contains).
+			if(!spaceBoundary->isVirtual() && convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
 				continue;
 
 			std::string elemGUID = spaceBoundary->guidRelatedElement();
@@ -1027,8 +1470,24 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 								  [opid](const auto& op) -> bool { return op.m_id == opid; });
 		if(fitOp == openings.end())
 			continue;
-		if(fitOp->hasSpaceBoundary())
+		if(fitOp->hasSpaceBoundaryInSpace(m_guid))
 			continue;
+		// Defer low-coverage matches to the building-level cross-space fallback.
+		// Per-space matching only sees SBs whose element hosts the opening (plus
+		// synthetic Missing SBs) — committing a sliver here (e.g. 0.86 m² of a
+		// 3.87 m² window grazing a Missing shell fill) permanently blocks the
+		// cross-space pass from attaching the full-size match on the correct wall.
+		// The same candidate stays reachable there, so nothing is lost by waiting.
+		if(cand.openingElem) {
+			double elemArea = cand.openingElem->openingArea();
+			if(elemArea > 0.1 && cand.area < 0.5 * elemArea) {
+				Logger::instance() << "space-openings: DEFER low-coverage space='" << spaceTag << "'"
+								   << " opening id=" << opid << " name='" << fitOp->m_name << "'"
+								   << " area=" << cand.area << " elemArea=" << elemArea
+								   << " sb='" << cand.parentSB->m_name << "'";
+				continue;
+			}
+		}
 		addOpeningSpaceBoundary(cand.mergedSurface, *fitOp, cand.parentSB, cand.openingElem,
 								m_longName, openingSpaceBoundaries, *this, convertOptions);
 		++committed;
@@ -1083,12 +1542,15 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 			openingElem = buildingElements.fromID(opening.openingElementIds().front());
 	}
 
-	// Iterate this space's construction SBs, trying each one that (by m_containedOpenings)
-	// accepts this opening. Pick the match with the biggest intersection area.
+	// Iterate this space's construction AND virtual SBs, trying each one that (by
+	// m_containedOpenings) accepts this opening. Pick the match with the biggest
+	// intersection area. Virtual SBs are included: WSHH-class models author the
+	// facade of rooms whose wall has only an axis representation as a VIRTUAL
+	// boundary — the windows in that facade must attach to it.
 	for(const auto& sb : m_spaceBoundaries) {
-		if(!sb->isConstructionElement())
+		if(!sb->isConstructionElement() && !sb->isVirtual())
 			continue;
-		if(convertOptions.noSearchForOpenings(sb->typeRelatedElement()))
+		if(!sb->isVirtual() && convertOptions.noSearchForOpenings(sb->typeRelatedElement()))
 			continue;
 
 		std::string elemGUID = sb->guidRelatedElement();
@@ -1106,16 +1568,46 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 			searchDist = std::max(sbElem->thickness(), searchDist);
 		searchDist *= 1.1;
 
-		Surface merged = computeOpeningMatchSurface(opening, sb, convertOptions, searchDist, allowCoplanarAccept);
+		double matchDist = 1e20;
+		Surface merged = computeOpeningMatchSurface(opening, sb, convertOptions, searchDist, allowCoplanarAccept, &matchDist);
 		if(!merged.isValid(convertOptions.m_distanceEps))
 			continue;
 		double area = merged.area();
-		if(area > best.area) {
-			best.parentSB = sb;
-			best.openingElem = openingElem;
-			best.mergedSurface = merged;
-			best.area = area;
+		// Sanity: reject candidates wildly larger than the window/door itself (see
+		// createSpaceBoundariesForOpeningsFromSpaceBoundaries::considerCandidate).
+		if(openingElem) {
+			double elemArea = openingElem->openingArea();
+			if(elemArea > 0.1 && area > 3.0 * elemArea) {
+				Logger::instance() << "space-openings: REJECT oversized candidate opening id=" << opening.m_id
+								   << " name='" << opening.m_name << "' area=" << area
+								   << " elementArea=" << elemArea << " sb='" << sb->m_name << "'";
+				continue;
+			}
 		}
+		double elemDist = openingElemDistanceToMatch(openingElem, merged, &opening);
+		if(opening.m_id == debugOpeningId()) {
+			Logger::instance() << "  dbg-open: CANDIDATE(fb) sb='" << sb->m_name << "' area=" << area
+							   << " elemDist=" << elemDist
+							   << " elemSurfaces=" << (openingElem ? (int)openingElem->surfaces().size() : -1);
+		}
+		if(elemDist < 1e19) {
+			// Loose sanity cap only: the element position may legitimately be a couple
+			// of meters from the patch centroid (placement origin at a corner of the
+			// oversized WSHH opening boxes). The cross-space fallback compares the
+			// candidates of all passes RELATIVELY via isBetterOpeningMatch, so a truly
+			// wrong-wall candidate loses to the closer one instead of being hard-gated.
+			const double kMaxElemDistHard = 10.0;
+			if(elemDist > kMaxElemDistHard) {
+				Logger::instance() << "space-openings: REJECT far-element opening id=" << opening.m_id
+								   << " name='" << opening.m_name << "' elemDist=" << elemDist
+								   << " sb='" << sb->m_name << "' area=" << area;
+				continue;
+			}
+			matchDist = elemDist;
+		}
+		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist};
+		if(isBetterOpeningMatch(cand, best))
+			best = cand;
 	}
 	return best;
 }
@@ -1174,7 +1666,18 @@ int constructionId(const shared_ptr<SpaceBoundary>& sb, const BuildingElementsCo
 }
 
 void Space::evaluateSpaceBoundaryTypes(const objectShapeTypeVector_t& shapes,
-								 const BuildingElementsCollector& buildingElements) {
+								 const BuildingElementsCollector& buildingElements,
+								 const ConvertOptions& convertOptions) {
+	// Drop IFC-authored space boundaries whose related element type was filtered
+	// out via the dialog's element-type list (m_elementsForSpaceBoundaries).
+	// This makes the dialog checkbox cover BOTH the matcher path AND IFC-authored
+	// IfcRelSpaceBoundary entries — e.g. unchecking "Column" reliably removes
+	// columns from the resulting model, regardless of how the SB was created.
+	// Virtual space boundaries (SB with no real element behind them) are kept,
+	// they don't represent a building element type.
+	std::vector<std::shared_ptr<SpaceBoundary>> filtered;
+	filtered.reserve(m_spaceBoundaries.size());
+
 	for(size_t sbI=0; sbI<m_spaceBoundaries.size(); ++sbI) {
 		auto& sb = m_spaceBoundaries[sbI];
 
@@ -1183,7 +1686,26 @@ void Space::evaluateSpaceBoundaryTypes(const objectShapeTypeVector_t& shapes,
 		int id = constructionId(sb, buildingElements);
 
 		if(type > -1) {
-			sb->setRelatingElementType(static_cast<BuildingElementTypes>(type));
+			const BuildingElementTypes betype = static_cast<BuildingElementTypes>(type);
+			// Apply the dialog filter only to types the dialog actually exposes
+			// (constructions and similar constructions). Anything else (openings,
+			// BET_All catch-all, etc.) keeps its previous behaviour.
+			// Columns never become part of the room envelope: free-standing columns
+			// produce interior boundary fragments that break the room volume and add
+			// no thermal value. They stay visible in the VicIFC 3D model.
+			if(betype == BET_Column) {
+				Logger::instance() << "Dropping IFC-authored space boundary id=" << sb->m_id
+								   << " (column boundaries are excluded from rooms)";
+				continue;
+			}
+			const bool dialogControls = isConstructionType(betype) || isConstructionSimilarType(betype);
+			if(dialogControls && !convertOptions.hasElementsForSpaceBoundaries(betype)) {
+				Logger::instance() << "Dropping IFC-authored space boundary id=" << sb->m_id
+								   << " (related element type " << (int)betype
+								   << " disabled in dialog)";
+				continue;
+			}
+			sb->setRelatingElementType(betype);
 			sb->m_elementEntityId = id;
 		}
 		else {
@@ -1196,7 +1718,10 @@ void Space::evaluateSpaceBoundaryTypes(const objectShapeTypeVector_t& shapes,
 			sb->m_elementEntityId = -1;
 		}
 
+		filtered.push_back(sb);
 	} // end loop over space boundaries
+
+	m_spaceBoundaries.swap(filtered);
 }
 
 bool Space::evaluateSpaceBoundaryGeometry(shared_ptr<UnitConverter>& unit_converter,
@@ -1240,12 +1765,11 @@ bool Space::evaluateSpaceBoundaryGeometry(shared_ptr<UnitConverter>& unit_conver
 
 bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 										 const BuildingElementsCollector& buildingElements,
-										 std::vector<Opening>& openings,
 										 shared_ptr<UnitConverter>& unit_converter,
 										 std::vector<ConvertError>& errors,
 										 const ConvertOptions& convertOptions) {
 	// get space boundary types and set element id connections
-	evaluateSpaceBoundaryTypes(shapes, buildingElements);
+	evaluateSpaceBoundaryTypes(shapes, buildingElements, convertOptions);
 
 	// convert geometry and create surfaces
 	bool res = evaluateSpaceBoundaryGeometry(unit_converter, errors, convertOptions);
@@ -1318,6 +1842,8 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 			for(auto& sb : group)
 				polys.push_back(sb->surface().polygon());
 			PlaneNormal plane(group.front()->surface().polygon());
+			if(!plane.m_valid)
+				continue; // degenerate reference polygon (e.g. empty SB fragment) — cannot merge
 			std::vector<CoplanarUnionRing> rings = unionCoplanarPolygons(polys, plane);
 			if(rings.size() != 1 || !rings.front().m_holes.empty())
 				continue; // disjoint or has holes — skip merge
@@ -1357,8 +1883,16 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 			openingSBs.push_back(sb);
 	}
 
-	if(openingSBs.empty())
+	if(openingSBs.empty()) {
+		// No authored opening SBs to attach — but the shell anchoring must STILL
+		// run. Rooms without windows/doors boundaries (WCs, corridors, cellars)
+		// otherwise keep their raw authored SB set: unanchored, unfilled, with
+		// arbitrary winding — exactly the red "volume inconsistent" rooms in the
+		// VICUS structure view.
+		if(convertOptions.m_anchorSBsToSpaceShell)
+			anchorSpaceBoundariesToShell(convertOptions);
 		return true;
+	}
 
 //	std::map<int,std::vector<int>> parallelOpeningSBs;
 //	for(size_t ci=0; ci<constructionSBs.size(); ++ci) {
@@ -1369,39 +1903,6 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 //				parallelOpeningSBs[ci].push_back(oi);
 //		}
 //	}
-
-	// IFC-path attaches opening SBs to construction SBs but doesn't update the
-	// matching Opening's m_spaceBoundary. Without this, Building::updateStoreys'
-	// cross-space fallback re-matches the opening and creates a SECOND attachment
-	// (named differently and with different geometry source), producing duplicate
-	// SubSurfaces in the VICUS output.
-	auto linkOpeningSBToOpening = [&](const std::shared_ptr<SpaceBoundary>& openingSB) {
-		const std::string& sbGuid = openingSB->guidRelatedElement();
-		if(sbGuid.empty())
-			return;
-		for(Opening& op : openings) {
-			if(op.hasSpaceBoundary())
-				continue;
-			// IFC4-style: SB references IfcWindow/IfcDoor — match window/door GUID via fill.
-			bool matched = false;
-			for(int eid : op.openingElementIds()) {
-				std::shared_ptr<BuildingElement> be = buildingElements.fromID(eid);
-				if(be && be->m_guid == sbGuid) {
-					matched = true;
-					break;
-				}
-			}
-			// IFC2x3 / abstractBIM-style: SB references the IfcOpeningElement itself —
-			// match against the Opening's own GUID (BBW_Haus D and similar).
-			if(!matched && op.guid() == sbGuid)
-				matched = true;
-			if(matched) {
-				openingSB->m_openingId = op.m_id;
-				op.setSpaceBoundary(openingSB);
-				return;
-			}
-		}
-	};
 
 	// Some IFC files (BBW_Haus D, etc.) have one IfcOpeningElement split into many
 	// IfcRelSpaceBoundary fragments — up to 100+ per (opening, wall) pair. Each
@@ -1494,25 +1995,10 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 
 	}
 
-	// Post-pass: link Openings to their attached IFC openingSBs only if the resulting
-	// SubSurface will be valid. Validation uses the FINAL constrSB->surface() (after
-	// all merges) and matches what getVicusSurface() will do at write time. Openings
-	// whose IFC SBs would produce invalid SubSurfaces stay unlinked, so the cross-space
-	// fallback in Building::updateStoreys can attempt them with its own geometry.
-	for(const auto& constrSB : constructionSBs) {
-		for(const auto& openingSB : constrSB->containedOpeningSpaceBoundaries()) {
-			// Replicate the validation chain from SpaceBoundary::getVicusSurface so the
-			// link decision matches what's actually rendered. Skip if any check fails —
-			// the cross-space fallback then has another chance to attach the opening.
-			Surface probe = constrSB->surface();
-			if(!probe.addSubSurface(openingSB->surface()))
-				continue;
-			const auto& subs = probe.subSurfaces();
-			if(subs.empty() || !VICUS::Polygon2D(subs.back().polygon()).isValid())
-				continue;
-			linkOpeningSBToOpening(openingSB);
-		}
-	}
+	// NOTE: linking Openings to their attached IFC openingSBs happens AFTER the
+	// parallel per-space phase, in Space::linkOpeningsToSpaceBoundaries() — called
+	// serially from BuildingStorey::updateSpaces. It writes into the shared
+	// `openings` vector, which is not thread-safe from inside the OMP region.
 
 	std::vector<std::shared_ptr<SpaceBoundary>> missingOpeningSBs;
 	for(auto openingSB : openingSBs) {
@@ -1540,7 +2026,630 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 		}
 	}
 
+	// Re-anchor SBs onto the space's own solid shell and close remaining gaps.
+	// Runs AFTER opening SBs are attached (the samePoints-based heal above needs the
+	// original vertices) — attached opening SBs are re-clipped against the snapped
+	// parent at write time anyway.
+	if(convertOptions.m_anchorSBsToSpaceShell)
+		anchorSpaceBoundariesToShell(convertOptions);
+
 	return true;
+}
+
+void Space::linkOpeningsToSpaceBoundaries(const BuildingElementsCollector& buildingElements,
+										  std::vector<Opening>& openings) {
+	// IFC-path attaches opening SBs to construction SBs but doesn't update the
+	// matching Opening. Without this, Building::updateStoreys' cross-space fallback
+	// re-matches the opening and creates a SECOND attachment (named differently and
+	// with different geometry source), producing duplicate SubSurfaces in the output.
+	auto linkOpeningSBToOpening = [&](const std::shared_ptr<SpaceBoundary>& openingSB) {
+		const std::string& sbGuid = openingSB->guidRelatedElement();
+		if(sbGuid.empty())
+			return;
+		for(Opening& op : openings) {
+			// Per-space check: internal doors/windows collect one SB per room side.
+			if(op.hasSpaceBoundaryInSpace(m_guid))
+				continue;
+			// IFC4-style: SB references IfcWindow/IfcDoor — match window/door GUID via fill.
+			bool matched = false;
+			for(int eid : op.openingElementIds()) {
+				std::shared_ptr<BuildingElement> be = buildingElements.fromID(eid);
+				if(be && be->m_guid == sbGuid) {
+					matched = true;
+					break;
+				}
+			}
+			// IFC2x3 / abstractBIM-style: SB references the IfcOpeningElement itself —
+			// match against the Opening's own GUID (BBW_Haus D and similar).
+			if(!matched && op.guid() == sbGuid)
+				matched = true;
+			if(matched) {
+				openingSB->m_openingId = op.m_id;
+				op.addSpaceBoundary(openingSB);
+				return;
+			}
+		}
+	};
+
+	// Link Openings to their attached IFC openingSBs only if the resulting
+	// SubSurface will be valid. Validation uses the FINAL constrSB->surface() (after
+	// all merges) and matches what getVicusSurface() will do at write time. Openings
+	// whose IFC SBs would produce invalid SubSurfaces stay unlinked, so the cross-space
+	// fallback in Building::updateStoreys can attempt them with its own geometry.
+	for(const auto& constrSB : m_spaceBoundaries) {
+		if(!constrSB->isConstructionElement() && !constrSB->isVirtual())
+			continue;
+		for(const auto& openingSB : constrSB->containedOpeningSpaceBoundaries()) {
+			// Replicate the validation chain from SpaceBoundary::getVicusSurface so the
+			// link decision matches what's actually rendered. Skip if any check fails —
+			// the cross-space fallback then has another chance to attach the opening.
+			Surface probe = constrSB->surface();
+			if(!probe.addSubSurface(openingSB->surface()))
+				continue;
+			const auto& subs = probe.subSurfaces();
+			if(subs.empty() || !VICUS::Polygon2D(subs.back().polygon()).isValid())
+				continue;
+			linkOpeningSBToOpening(openingSB);
+		}
+	}
+}
+
+
+
+void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
+	if(m_surfacesOrg.empty())
+		return;
+	// Perf guard: spaces with huge triangulated shells would make the
+	// per-SB x per-face intersection sweep explode. Snap/fill (pass 1+2) is
+	// skipped for those, but the orientation pass 3 below still runs — large
+	// cellar/corridor rooms otherwise keep arbitrary windings and report
+	// inconsistent volumes.
+	const bool doAnchor = m_surfacesOrg.size() <= 2000;
+
+	const double EPS = convertOptions.m_distanceEps;
+	const double SNAP_TOL = convertOptions.m_shellSnapTolerance;
+	// Unanchored SBs still shadow the fill up to this plane distance, so SBs authored
+	// at the wall center plane (1st-level style) don't get doubled by a Missing SB
+	// created on the shell face right in front of them.
+	const double SHADOW_TOL = std::max(0.3, SNAP_TOL);
+
+	// State shared between the anchoring passes and the always-on orientation pass.
+	std::vector<int> anchoredFace(m_spaceBoundaries.size(), -1);
+	std::vector<std::shared_ptr<SpaceBoundary>> fillSBs;
+	double filledArea = 0.0;
+	int snapped = 0;
+
+	if(doAnchor) {
+	// --- Pass 1: clip each construction/virtual SB against ALL shell faces it is
+	// close to. One authored SB frequently spans several shell faces (e.g. an SB
+	// covering a wall face plus the adjacent slab edge, or shells fragmented by
+	// carve) — a single-best-face snap would lose most of its area. The largest
+	// piece stays on the original SB, additional pieces become cloned SBs, and
+	// attached opening SBs are redistributed to the piece they intersect.
+	std::vector<std::shared_ptr<SpaceBoundary>> clonedSBs;
+	std::vector<int> clonedFace;
+	for(size_t sbi=0; sbi<m_spaceBoundaries.size(); ++sbi) {
+		auto& sb = m_spaceBoundaries[sbi];
+		if(!sb->isConstructionElement() && !sb->isVirtual())
+			continue;
+		const Surface& s = sb->surface();
+		if(!s.isValid(EPS) || s.area() < convertOptions.m_minimumSurfaceArea)
+			continue;
+
+		struct Piece {
+			int		m_faceIdx;
+			Surface	m_clip;
+		};
+		std::vector<Piece> pieces;
+		double totalClipArea = 0.0;
+		// Authored SB normal (unit) — used for the angle-based candidate test below.
+		IBKMK::Vector3D nS = newellNormal(s.polygon());
+		double nSlen = std::sqrt(nS.m_x*nS.m_x + nS.m_y*nS.m_y + nS.m_z*nS.m_z);
+		if(nSlen < 1e-10)
+			continue;
+		nS.m_x /= nSlen; nS.m_y /= nSlen; nS.m_z /= nSlen;
+
+		for(size_t fi=0; fi<m_surfacesOrg.size(); ++fi) {
+			const Surface& face = m_surfacesOrg[fi];
+			// Angle-based candidate test instead of the strict isParallelTo(1e-3):
+			// authored SBs are frequently tilted a fraction of a degree against the
+			// space solid (WSHH cellar walls) and would never snap otherwise.
+			IBKMK::Vector3D nF = newellNormal(face.polygon());
+			double nFlen = std::sqrt(nF.m_x*nF.m_x + nF.m_y*nF.m_y + nF.m_z*nF.m_z);
+			if(nFlen < 1e-10)
+				continue;
+			nF.m_x /= nFlen; nF.m_y /= nFlen; nF.m_z /= nFlen;
+			double cosAngle = std::fabs(nS.m_x*nF.m_x + nS.m_y*nF.m_y + nS.m_z*nF.m_z);
+			if(cosAngle < 0.999) // ~2.5 degrees
+				continue;
+			// Plane offset via centroid projection.
+			IBKMK::Vector3D diff(s.centroid().m_x - face.centroid().m_x,
+								 s.centroid().m_y - face.centroid().m_y,
+								 s.centroid().m_z - face.centroid().m_z);
+			double off = nF.m_x*diff.m_x + nF.m_y*diff.m_y + nF.m_z*diff.m_z;
+			if(std::fabs(off) > SNAP_TOL)
+				continue;
+			// TRUE per-vertex projection onto the face plane (a pure translation is
+			// not enough for tilted SBs — the vertices must land IN the plane).
+			const IBKMK::Vector3D& p0 = face.centroid();
+			polygon3D_t moved = s.polygon();
+			for(IBKMK::Vector3D& v : moved) {
+				double d = nF.m_x*(v.m_x-p0.m_x) + nF.m_y*(v.m_y-p0.m_y) + nF.m_z*(v.m_z-p0.m_z);
+				v.m_x -= nF.m_x * d;
+				v.m_y -= nF.m_y * d;
+				v.m_z -= nF.m_z * d;
+			}
+			Surface clip = face.intersect(Surface(moved));
+			if(!clip.isValid(EPS))
+				continue;
+			// Clean the clip result: clipper output can carry spikes / nearly-collinear
+			// throwback vertices that VICUS' XML reader rejects after rounding.
+			const IBKMK::Vector3D faceRefN = newellNormal(face.polygon());
+			for(const Surface& part : clip.getSimplified()) {
+				if(hasNonAdjacentDuplicateVertex(part.polygon()))
+					continue; // self-touching ring — CDT would reject it
+				double a = part.area();
+				if(a < std::max(0.01, convertOptions.m_minimumSurfaceArea))
+					continue;
+				if(meanPolygonWidth(part) < 0.02)
+					continue; // sliver strip — would collapse under XML rounding
+				// Winding follows the shell face (carve solid faces are consistently
+				// oriented outward) so the VICUS room volume stays consistent.
+				pieces.push_back(Piece{(int)fi, alignedWinding(part, faceRefN)});
+				totalClipArea += a;
+			}
+		}
+		// Snap only when the shell keeps a substantial part of the SB — grazing
+		// overlaps (e.g. an SB from the room above touching this shell) stay put.
+		if(pieces.empty() || totalClipArea < 0.3 * s.area()) {
+			Logger::instance() << "anchorShell: space=" << m_id
+							   << " NOT-SNAPPED sb='" << sb->m_name << "'"
+							   << " area=" << s.area()
+							   << " pieces=" << pieces.size()
+							   << " clippedArea=" << totalClipArea;
+			continue;
+		}
+		std::sort(pieces.begin(), pieces.end(),
+				  [](const Piece& a, const Piece& b){ return a.m_clip.area() > b.m_clip.area(); });
+
+		// Save attached opening SBs, then redistribute them onto the pieces below.
+		std::vector<std::shared_ptr<SpaceBoundary>> attachedOpenings = sb->containedOpeningSpaceBoundaries();
+		sb->clearContainedOpeningSpaceBoundaries();
+
+		// Largest piece keeps the original SB.
+		Surface mainClip = pieces.front().m_clip;
+		mainClip.set(s.id(), s.elementId(), s.name(), s.isVirtual());
+		sb->fetchGeometryFromBuildingElement(mainClip, convertOptions);
+		anchoredFace[sbi] = pieces.front().m_faceIdx;
+		++snapped;
+
+		std::vector<std::shared_ptr<SpaceBoundary>> pieceSBs{sb};
+		for(size_t pi=1; pi<pieces.size(); ++pi) {
+			std::shared_ptr<SpaceBoundary> clone(new SpaceBoundary(GUID_maker::instance().guid()));
+			clone->setFromSpaceBoundaryWithSurface(*sb, pieces[pi].m_clip);
+			clonedSBs.push_back(clone);
+			clonedFace.push_back(pieces[pi].m_faceIdx);
+			pieceSBs.push_back(clone);
+		}
+
+		// Reattach each opening SB to the piece it overlaps most.
+		for(const auto& openingSB : attachedOpenings) {
+			std::shared_ptr<SpaceBoundary> bestPiece = pieceSBs.front();
+			double bestArea = 0.0;
+			for(const auto& piece : pieceSBs) {
+				Surface inter = piece->surface().intersect(openingSB->surface());
+				if(!inter.isValid(EPS))
+					continue;
+				double a = inter.area();
+				if(a > bestArea) {
+					bestArea = a;
+					bestPiece = piece;
+				}
+			}
+			bestPiece->addContainedOpeningSpaceBoundaries(openingSB);
+		}
+	}
+	if(!clonedSBs.empty()) {
+		for(size_t ci=0; ci<clonedSBs.size(); ++ci) {
+			m_spaceBoundaries.push_back(clonedSBs[ci]);
+			anchoredFace.push_back(clonedFace[ci]);
+		}
+	}
+
+	// --- Pass 1c: de-overlap the anchored SBs per shell face. Fragmented authored
+	// boundary sets (WSHH cellars: dozens of Virtual fragments) snap several SBs
+	// onto the SAME face region — stacked coplanar surfaces multiply into the room
+	// volume ("volume exceeds bounding box") and litter the shell with open edges.
+	// Opening-carrying SBs claim their region first, then larger ones; later SBs
+	// are clipped to the unclaimed remainder (or emptied entirely).
+	{
+		std::map<int, std::vector<size_t>> sbsByFace;
+		for(size_t sbi=0; sbi<anchoredFace.size() && sbi<m_spaceBoundaries.size(); ++sbi)
+			if(anchoredFace[sbi] >= 0)
+				sbsByFace[anchoredFace[sbi]].push_back(sbi);
+		size_t deoverlapped = 0, emptied = 0;
+		for(auto& kv : sbsByFace) {
+			std::vector<size_t>& list = kv.second;
+			if(list.size() < 2)
+				continue;
+			std::sort(list.begin(), list.end(), [this](size_t a, size_t b){
+				bool oa = !m_spaceBoundaries[a]->containedOpeningSpaceBoundaries().empty();
+				bool ob = !m_spaceBoundaries[b]->containedOpeningSpaceBoundaries().empty();
+				if(oa != ob) return oa;
+				return m_spaceBoundaries[a]->surface().area() > m_spaceBoundaries[b]->surface().area();
+			});
+			std::vector<Surface> claimed;
+			const IBKMK::Vector3D refN = newellNormal(m_surfacesOrg[(size_t)kv.first].polygon());
+			for(size_t sbi : list) {
+				auto& sb = m_spaceBoundaries[sbi];
+				Surface cur = sb->surface();
+				bool changed = false;
+				for(const Surface& c : claimed) {
+					if(!cur.isValid(EPS))
+						break;
+					Surface::IntersectionResult ir = cur.intersect2(c);
+					if(ir.m_intersections.empty())
+						continue;
+					// keep the largest remainder outside the claimed region
+					Surface bestRem;
+					double bestA = 0.0;
+					for(const Surface& d : ir.m_diffBaseMinusClip) {
+						double a = d.area();
+						if(a > bestA) { bestA = a; bestRem = d; }
+					}
+					changed = true;
+					if(bestA < std::max(0.01, convertOptions.m_minimumSurfaceArea)) {
+						cur = Surface();
+						break;
+					}
+					cur = alignedWinding(bestRem, refN);
+				}
+				if(!changed) {
+					claimed.push_back(cur);
+					continue;
+				}
+				++deoverlapped;
+				if(!cur.isValid(EPS) || cur.area() < std::max(0.01, convertOptions.m_minimumSurfaceArea)
+						|| meanPolygonWidth(cur) < 0.02) {
+					// fully covered by earlier SBs — empty it (skipped by fill/export)
+					Surface empty;
+					empty.set(sb->surface().id(), sb->surface().elementId(), sb->surface().name(), sb->surface().isVirtual());
+					sb->fetchGeometryFromBuildingElement(empty, convertOptions);
+					anchoredFace[sbi] = -2; // no longer occupies the face, no shadow
+					++emptied;
+					continue;
+				}
+				cur.set(sb->surface().id(), sb->surface().elementId(), sb->surface().name(), sb->surface().isVirtual());
+				sb->fetchGeometryFromBuildingElement(cur, convertOptions);
+				claimed.push_back(sb->surface());
+			}
+		}
+		if(deoverlapped > 0)
+			Logger::instance() << "anchorShell: space=" << m_id
+							   << " de-overlapped " << deoverlapped << " SBs (" << emptied << " emptied)";
+	}
+
+	// --- Pass 2: fill uncovered shell parts with Missing SBs. The shell faces come
+	// from the space solid (closed by construction), so full coverage closes the
+	// room volume.
+	for(size_t fi=0; fi<m_surfacesOrg.size(); ++fi) {
+		const Surface& face = m_surfacesOrg[fi];
+		if(face.area() < convertOptions.m_minimumSurfaceArea)
+			continue;
+		std::vector<Surface> residuals{face};
+		for(size_t sbi=0; sbi<m_spaceBoundaries.size() && !residuals.empty(); ++sbi) {
+			auto& sb = m_spaceBoundaries[sbi];
+			if(!sb->isConstructionElement() && !sb->isVirtual())
+				continue;
+			const Surface& s = sb->surface();
+			if(!s.isValid(EPS))
+				continue;
+			bool subtract = false;
+			if(anchoredFace[sbi] == (int)fi)
+				subtract = true;
+			else if(anchoredFace[sbi] < 0) {
+				// Unanchored SB: shadows the fill if it lies (roughly) over this face.
+				if(s.isParallelTo(face, EPS) &&
+				   s.distanceToParallelPlane(face, EPS) <= SHADOW_TOL)
+					subtract = true;
+			}
+			if(!subtract)
+				continue;
+			std::vector<Surface> next;
+			for(const Surface& r : residuals) {
+				Surface::IntersectionResult ir = r.intersect2(s);
+				if(ir.m_intersections.empty()) {
+					next.push_back(r);
+					continue;
+				}
+				for(size_t di=0; di<ir.m_diffBaseMinusClip.size(); ++di) {
+					// Align winding to the shell face BEFORE holes are attached
+					// (their 2D coordinates depend on the parent plane orientation).
+					Surface d = alignedWinding(ir.m_diffBaseMinusClip[di], newellNormal(face.polygon()));
+					if(d.area() < convertOptions.m_minimumSurfaceArea)
+						continue;
+					// Keep hole rings (SB strictly inside the residual): the hole edge
+					// matches the interior SB's outline, so the shell stays closed and
+					// the fill doesn't double-cover the SB region. Holes need a valid
+					// id — the raw clipper result carries id=-1, which the VICUS
+					// writer rejects with an exception.
+					for(const Surface& hole : ir.m_holesBaseMinusClip[di]) {
+						if(hasNonAdjacentDuplicateVertex(hole.polygon()))
+							continue; // degenerate hole ring — CDT would reject it
+						Surface h = hole;
+						h.set(GUID_maker::instance().guid(), -1, "Hole", false);
+						d.addSubSurface(h);
+					}
+					next.push_back(d);
+				}
+			}
+			residuals.swap(next);
+		}
+		for(const Surface& r : residuals) {
+			// Clean spikes/collinear throwbacks from the clipper difference (VICUS'
+			// reader rejects them after coordinate rounding). Residuals with holes
+			// keep their geometry — getSimplified() would lose the hole rings —
+			// UNLESS the outer ring is self-touching: then the ring split is forced
+			// and the holes are dropped (a slight double-cover of the interior SB
+			// beats emitting a CDT-breaking duplicate-vertex polygon).
+			std::vector<Surface> parts;
+			bool realign = false;
+			if(r.holes().empty() || hasNonAdjacentDuplicateVertex(r.polygon())) {
+				parts = r.getSimplified();
+				realign = true; // getSimplified rebuilds rings with arbitrary winding
+			}
+			else
+				parts.push_back(r); // already aligned in the diff step; keeps its holes
+			const IBKMK::Vector3D fillRefN = newellNormal(face.polygon());
+			for(Surface& part : parts) {
+				if(realign)
+					part = alignedWinding(part, fillRefN);
+				if(hasNonAdjacentDuplicateVertex(part.polygon()))
+					continue; // still self-touching after cleanup — skip
+				if(part.area() < std::max(0.01, convertOptions.m_minimumSurfaceArea))
+					continue;
+				if(meanPolygonWidth(part) < 0.02)
+					continue; // sliver strip — would collapse under XML rounding
+				std::shared_ptr<SpaceBoundary> sb(new SpaceBoundary(GUID_maker::instance().guid()));
+				sb->setForMissingElement("Missing", *this, false);
+				if(sb->fetchGeometryFromBuildingElement(part, convertOptions)) {
+					fillSBs.push_back(sb);
+					filledArea += part.area();
+				}
+			}
+		}
+	}
+	if(!fillSBs.empty())
+		m_spaceBoundaries.insert(m_spaceBoundaries.end(), fillSBs.begin(), fillSBs.end());
+	} // doAnchor
+	if(anchoredFace.size() < m_spaceBoundaries.size())
+		anchoredFace.resize(m_spaceBoundaries.size(), -1);
+
+	// --- Pass 3: orientation heuristic for SBs that could NOT be anchored to a
+	// shell face. Their authored winding is arbitrary; VICUS needs outward-facing
+	// normals for a consistent room volume. Flip when the Newell normal points
+	// towards the space centroid (exact for convex rooms, good default otherwise).
+	// SBs carrying hole rings are skipped — their cached 2D hole coordinates
+	// depend on the current plane orientation.
+	{
+		IBKMK::Vector3D spaceCentroid(0, 0, 0);
+		size_t npts = 0;
+		for(const Surface& sorg : m_surfacesOrg) {
+			const IBKMK::Vector3D& c = sorg.centroid();
+			spaceCentroid.m_x += c.m_x; spaceCentroid.m_y += c.m_y; spaceCentroid.m_z += c.m_z;
+			++npts;
+		}
+		if(npts > 0) {
+			spaceCentroid.m_x /= double(npts); spaceCentroid.m_y /= double(npts); spaceCentroid.m_z /= double(npts);
+			for(size_t sbi=0; sbi<anchoredFace.size() && sbi<m_spaceBoundaries.size(); ++sbi) {
+				if(anchoredFace[sbi] >= 0)
+					continue; // snapped SBs already follow the shell face orientation
+				auto& sb = m_spaceBoundaries[sbi];
+				if(!sb->isConstructionElement() && !sb->isVirtual())
+					continue;
+				const Surface& surf = sb->surface();
+				if(!surf.isValid(EPS) || !surf.holes().empty())
+					continue;
+				IBKMK::Vector3D n = newellNormal(surf.polygon());
+				double nlen = std::sqrt(n.m_x*n.m_x + n.m_y*n.m_y + n.m_z*n.m_z);
+				if(nlen < 1e-8)
+					continue;
+				const IBKMK::Vector3D& c = surf.centroid();
+				double d = (n.m_x*(spaceCentroid.m_x-c.m_x) + n.m_y*(spaceCentroid.m_y-c.m_y)
+							+ n.m_z*(spaceCentroid.m_z-c.m_z)) / nlen;
+				if(d > 0.01) {
+					// normal points into the room -> flip to outward
+					polygon3D_t rev(surf.polygon().rbegin(), surf.polygon().rend());
+					Surface flipped(rev);
+					flipped.set(surf.id(), surf.elementId(), surf.name(), surf.isVirtual());
+					sb->fetchGeometryFromBuildingElement(flipped, convertOptions);
+				}
+			}
+		}
+	}
+
+	// --- Pass 4: chain remaining uncovered boundary edges into closing polygons.
+	// Rooms whose IfcSpace tessellation solid is itself leaky (WSHH cellars) stay
+	// open even after the shell fill — the shell faces simply do not cover the
+	// gaps. Analogous to VICUS::Room::closingPolygons: collect all SB polygon
+	// edges, find sub-segments not covered by any collinear counter-edge, chain
+	// them into loops, and add each planar loop as a Missing SB.
+	{
+		struct GapEdge { IBKMK::Vector3D m_a, m_b; };
+		std::vector<GapEdge> edges;
+		for(const auto& sb : m_spaceBoundaries) {
+			if(!sb->isConstructionElement() && !sb->isVirtual())
+				continue;
+			const Surface& surf = sb->surface();
+			if(!surf.isValid(EPS))
+				continue;
+			const polygon3D_t& poly = surf.polygon();
+			for(size_t i=0; i<poly.size(); ++i)
+				edges.push_back(GapEdge{poly[i], poly[(i+1)%poly.size()]});
+		}
+		size_t gapLoops = 0;
+		double gapArea = 0.0;
+		if(edges.size() >= 3 && edges.size() <= 1500) {
+			const double PT_TOL = 0.01;    // collinearity distance [m]
+			const double CHAIN_TOL = 0.025; // loop chaining endpoint distance [m]
+			const double MIN_SEG = 0.05;   // ignore stray segments below [m]
+
+			auto sub = [](const IBKMK::Vector3D& a, const IBKMK::Vector3D& b){
+				return IBKMK::Vector3D(a.m_x-b.m_x, a.m_y-b.m_y, a.m_z-b.m_z);
+			};
+			auto len3 = [](const IBKMK::Vector3D& v){
+				return std::sqrt(v.m_x*v.m_x + v.m_y*v.m_y + v.m_z*v.m_z);
+			};
+			auto dot3 = [](const IBKMK::Vector3D& a, const IBKMK::Vector3D& b){
+				return a.m_x*b.m_x + a.m_y*b.m_y + a.m_z*b.m_z;
+			};
+
+			struct GapSeg { IBKMK::Vector3D m_a, m_b; };
+			std::vector<GapSeg> openSegs;
+			for(size_t i=0; i<edges.size(); ++i) {
+				IBKMK::Vector3D d = sub(edges[i].m_b, edges[i].m_a);
+				double elen = len3(d);
+				if(elen < MIN_SEG)
+					continue;
+				IBKMK::Vector3D dir(d.m_x/elen, d.m_y/elen, d.m_z/elen);
+
+				std::vector<std::pair<double,double>> cov;
+				for(size_t j=0; j<edges.size(); ++j) {
+					if(j == i)
+						continue;
+					IBKMK::Vector3D dj = sub(edges[j].m_b, edges[j].m_a);
+					double jlen = len3(dj);
+					if(jlen < 1e-6)
+						continue;
+					// parallel? |cross(dir, dj/jlen)| = sin(angle)
+					IBKMK::Vector3D cr(dir.m_y*dj.m_z - dir.m_z*dj.m_y,
+									   dir.m_z*dj.m_x - dir.m_x*dj.m_z,
+									   dir.m_x*dj.m_y - dir.m_y*dj.m_x);
+					if(len3(cr)/jlen > 0.05)
+						continue;
+					// both endpoints of edge j close to line i?
+					double t1 = dot3(sub(edges[j].m_a, edges[i].m_a), dir);
+					IBKMK::Vector3D f1(edges[i].m_a.m_x + dir.m_x*t1, edges[i].m_a.m_y + dir.m_y*t1, edges[i].m_a.m_z + dir.m_z*t1);
+					if(len3(sub(edges[j].m_a, f1)) > PT_TOL)
+						continue;
+					double t2 = dot3(sub(edges[j].m_b, edges[i].m_a), dir);
+					IBKMK::Vector3D f2(edges[i].m_a.m_x + dir.m_x*t2, edges[i].m_a.m_y + dir.m_y*t2, edges[i].m_a.m_z + dir.m_z*t2);
+					if(len3(sub(edges[j].m_b, f2)) > PT_TOL)
+						continue;
+					double lo = std::min(t1, t2), hi = std::max(t1, t2);
+					lo = std::max(lo, 0.0); hi = std::min(hi, elen);
+					if(hi - lo > 1e-4)
+						cov.push_back({lo, hi});
+				}
+				std::sort(cov.begin(), cov.end());
+				double cur = 0.0;
+				auto emitSeg = [&](double a, double b){
+					if(b - a < MIN_SEG)
+						return;
+					openSegs.push_back(GapSeg{
+						IBKMK::Vector3D(edges[i].m_a.m_x + dir.m_x*a, edges[i].m_a.m_y + dir.m_y*a, edges[i].m_a.m_z + dir.m_z*a),
+						IBKMK::Vector3D(edges[i].m_a.m_x + dir.m_x*b, edges[i].m_a.m_y + dir.m_y*b, edges[i].m_a.m_z + dir.m_z*b)});
+				};
+				for(const auto& c : cov) {
+					if(c.first > cur)
+						emitSeg(cur, c.first);
+					cur = std::max(cur, c.second);
+					if(cur >= elen)
+						break;
+				}
+				if(cur < elen)
+					emitSeg(cur, elen);
+			}
+
+			// chain open segments into closed loops
+			auto ptsClose = [&](const IBKMK::Vector3D& a, const IBKMK::Vector3D& b){
+				return len3(sub(a, b)) < CHAIN_TOL;
+			};
+			std::vector<char> used(openSegs.size(), 0);
+			for(size_t i0=0; i0<openSegs.size(); ++i0) {
+				if(used[i0])
+					continue;
+				std::vector<IBKMK::Vector3D> chain{openSegs[i0].m_a, openSegs[i0].m_b};
+				used[i0] = 1;
+				bool extended = true;
+				while(extended && chain.size() < 120) {
+					extended = false;
+					for(size_t j=0; j<openSegs.size(); ++j) {
+						if(used[j])
+							continue;
+						if(ptsClose(chain.back(), openSegs[j].m_a)) {
+							chain.push_back(openSegs[j].m_b); used[j] = 1; extended = true; break;
+						}
+						if(ptsClose(chain.back(), openSegs[j].m_b)) {
+							chain.push_back(openSegs[j].m_a); used[j] = 1; extended = true; break;
+						}
+					}
+				}
+				if(chain.size() < 4 || !ptsClose(chain.front(), chain.back()))
+					continue;
+				chain.pop_back();
+
+				// planarity: all points close to the Newell plane through the centroid
+				IBKMK::Vector3D n = newellNormal(chain);
+				double nlen = len3(n);
+				if(nlen < 1e-8)
+					continue;
+				IBKMK::Vector3D nu(n.m_x/nlen, n.m_y/nlen, n.m_z/nlen);
+				IBKMK::Vector3D c(0,0,0);
+				for(const IBKMK::Vector3D& v : chain) { c.m_x += v.m_x; c.m_y += v.m_y; c.m_z += v.m_z; }
+				c.m_x /= chain.size(); c.m_y /= chain.size(); c.m_z /= chain.size();
+				bool planar = true;
+				for(const IBKMK::Vector3D& v : chain)
+					if(std::fabs(dot3(sub(v, c), nu)) > 0.05) { planar = false; break; }
+				if(!planar)
+					continue;
+				if(hasNonAdjacentDuplicateVertex(chain))
+					continue;
+
+				// outward winding: normal must point away from the space centroid
+				{
+					IBKMK::Vector3D sc(0,0,0);
+					size_t np = 0;
+					for(const Surface& sorg : m_surfacesOrg) {
+						const IBKMK::Vector3D& oc = sorg.centroid();
+						sc.m_x += oc.m_x; sc.m_y += oc.m_y; sc.m_z += oc.m_z;
+						++np;
+					}
+					if(np > 0) {
+						sc.m_x /= double(np); sc.m_y /= double(np); sc.m_z /= double(np);
+						if(dot3(sub(sc, c), nu) > 0.0)
+							std::reverse(chain.begin(), chain.end());
+					}
+				}
+
+				Surface loopSurf(chain);
+				double loopArea = loopSurf.area();
+				if(loopArea < 0.05 || loopArea > 500.0 || meanPolygonWidth(loopSurf) < 0.02)
+					continue;
+
+				// NOTE: an overlap guard against existing coplanar surfaces was tried
+				// here (rejecting loops >70% covered). It prevented 13 rooms from
+				// flipping warning->error on WSHH, but blocked 47 rooms from turning
+				// valid — user chose "more green": loops are always accepted.
+				std::shared_ptr<SpaceBoundary> sb(new SpaceBoundary(GUID_maker::instance().guid()));
+				sb->setForMissingElement("Missing", *this, false);
+				if(sb->fetchGeometryFromBuildingElement(loopSurf, convertOptions)) {
+					m_spaceBoundaries.push_back(sb);
+					++gapLoops;
+					gapArea += loopSurf.area();
+				}
+			}
+		}
+		if(gapLoops > 0)
+			Logger::instance() << "anchorShell: space=" << m_id
+							   << " closed " << gapLoops << " gap loops (area=" << gapArea << ")";
+	}
+
+	if(snapped > 0 || !fillSBs.empty())
+		Logger::instance() << "anchorShell: space=" << m_id
+						   << " snapped=" << snapped << "/" << m_spaceBoundaries.size() - fillSBs.size()
+						   << " filled=" << fillSBs.size()
+						   << " fillArea=" << filledArea;
 }
 
 
@@ -1587,7 +2696,7 @@ bool Space::updateSpaceBoundaries(const objectShapeTypeVector_t& shapes,
 	if(useSpaceBoundaries && !m_spaceBoundaries.empty()) {
 		// get space boundary types and set element id connections
 		// convert geometry and create surfaces
-		success = evaluateSpaceBoundaryFromIFC(shapes, buildingElements, openings, unit_converter, errors, convertOptions);
+		success = evaluateSpaceBoundaryFromIFC(shapes, buildingElements, unit_converter, errors, convertOptions);
 	}
 	// try to evaluate space boundaries from building element entities
 	else {

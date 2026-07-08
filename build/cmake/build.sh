@@ -10,11 +10,25 @@
 #   [omp]						mark this as the OpenMP build (uses bb-omp-gcc as build dir)
 #   []
 
-# path export for mac
-export PATH=~/Qt/5.11.3/gcc_64/bin:~/Qt/5.11.3/clang_64/bin:$PATH
+# Qt installed via aqtinstall (see ~/install-qt-6.9.3.sh).
+# Override AQT_QT_VERSION / AQT_QT_PREFIX in the environment to point at a different install.
+AQT_QT_VERSION="${AQT_QT_VERSION:-6.9.3}"
+AQT_QT_PREFIX="${AQT_QT_PREFIX:-$HOME/Qt/${AQT_QT_VERSION}/gcc_64}"
 
-# for MacOS, brew install of Qt 5 ("brew install qt5")
-export CMAKE_PREFIX_PATH=/usr/local/opt/qt5/
+if [ -d "$AQT_QT_PREFIX" ]; then
+	echo "Using aqt Qt at $AQT_QT_PREFIX"
+	export PATH="$AQT_QT_PREFIX/bin:$PATH"
+	export CMAKE_PREFIX_PATH="$AQT_QT_PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+	export LD_LIBRARY_PATH="$AQT_QT_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+	export QT_PLUGIN_PATH="$AQT_QT_PREFIX/plugins"
+	export QML2_IMPORT_PATH="$AQT_QT_PREFIX/qml"
+	# bake aqt-Qt into the binary's RPATH so it does not silently fall back to system Qt (Fedora ships 6.11)
+	CMAKE_OPTIONS="$CMAKE_OPTIONS -DCMAKE_BUILD_RPATH=$AQT_QT_PREFIX/lib -DCMAKE_INSTALL_RPATH=$AQT_QT_PREFIX/lib -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+else
+	echo "WARN: $AQT_QT_PREFIX not found, falling back to legacy/system Qt paths"
+	# legacy fallback (mac brew + old aqt locations)
+	export PATH=~/Qt/5.15.2/gcc_64/bin:~/Qt/5.15.2/clang_64/bin:~/Qt/5.11.3/gcc_64/bin:~/Qt/5.11.3/clang_64/bin:$PATH
+fi
 
 CMAKELISTSDIR=$(pwd)/../..
 BUILDDIR="bb"

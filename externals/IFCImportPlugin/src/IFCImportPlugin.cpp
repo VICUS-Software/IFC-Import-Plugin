@@ -94,6 +94,20 @@ bool IFCImportPlugin::runCLI(const QString & ifcPath, const QString & vicusPath,
 		reader.setElementsForSpaceBoundaries(t, true);
 	reader.setElementsForSpaceBoundaries(IFCC::BET_BuildingElementPart, true);
 
+	// Matching mode override for batch tests (mirrors the GUI scenarios):
+	// IFCC_MATCHING = each | first | n | none
+	if(const char* m = std::getenv("IFCC_MATCHING")) {
+		std::string mv(m);
+		if(mv == "each")
+			reader.setConvertMatchingType(IFCC::ConvertOptions::CM_MatchEachConstruction);
+		else if(mv == "first")
+			reader.setConvertMatchingType(IFCC::ConvertOptions::CM_MatchOnlyFirstConstruction);
+		else if(mv == "n")
+			reader.setConvertMatchingType(IFCC::ConvertOptions::CM_MatchFirstNConstructions);
+		else if(mv == "none")
+			reader.setConvertMatchingType(IFCC::ConvertOptions::CM_NoMatching);
+	}
+
 	IBK::Path inPath(ifcPath.toStdString());
 	// ignoreReadError=true: keep going even if the STEP parser reports broken
 	// forward references — most files still produce usable geometry for the
