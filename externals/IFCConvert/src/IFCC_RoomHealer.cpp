@@ -525,6 +525,87 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 	}
 	if(added > 0)
 		room.setSurfaces(surfs);
+
+	// Pass 3b: close QUADS spanned by pairs of remaining uncovered edges.
+	// closingPolygons only chains planar loops — the typical leftovers are
+	// (a) excluded-column notches: three Missing side faces exist, the fourth
+	//     0.5x3.4m slot face is missing (two parallel full-height open edges),
+	// (b) trapezoid floor/ceiling strips over wedges between wall layers
+	//     (two coplanar horizontal open edges of different length).
+	{
+		const std::vector<VICUS::Room::UncoveredSegment>& segs = room.uncoveredSegments();
+		const size_t n2 = segs.size();
+		if(n2 >= 2 && n2 <= 60) {
+			std::vector<VICUS::Surface> cur = room.surfaces();
+			std::vector<bool> used(n2, false);
+			int quads = 0;
+			const IBKMK::Vector3D center = bboxCenter(cur);
+			for(size_t i=0; i<n2 && quads < 20; ++i) {
+				if(used[i]) continue;
+				const IBKMK::Vector3D ai = segs[i].m_start, bi = segs[i].m_end;
+				double li = (bi-ai).magnitude();
+				if(li < 0.05) continue;
+				for(size_t j=i+1; j<n2; ++j) {
+					if(used[j]) continue;
+					const IBKMK::Vector3D aj = segs[j].m_start, bj = segs[j].m_end;
+					double lj = (bj-aj).magnitude();
+					if(lj < 0.05) continue;
+					// edges must be roughly parallel and near each other
+					IBKMK::Vector3D di = (bi-ai)*(1.0/li), dj = (bj-aj)*(1.0/lj);
+					double dot = di.scalarProduct(dj);
+					if(std::fabs(dot) < 0.95)
+						continue;
+					double gap = ((ai+bi)*0.5 - (aj+bj)*0.5).magnitude();
+					if(gap < 0.02 || gap > 2.0)
+						continue;
+					// build quad (reverse j when running the same direction)
+					std::vector<IBKMK::Vector3D> quad;
+					if(dot > 0)
+						quad = {ai, bi, bj, aj};
+					else
+						quad = {ai, bi, aj, bj};
+					// planarity: all points within 5 cm of the quad plane
+					IBKMK::Vector3D qn = newellNormal(quad);
+					double qlen = qn.magnitude();
+					if(qlen < 1e-6)
+						continue;
+					qn *= 1.0/qlen;
+					double d0 = qn.scalarProduct(quad[0]);
+					bool planar = true;
+					for(const IBKMK::Vector3D& v : quad) {
+						if(std::fabs(qn.scalarProduct(v) - d0) > 0.05) {
+							planar = false;
+							break;
+						}
+					}
+					if(!planar)
+						continue;
+					double area = polygonArea3D(quad);
+					if(area < 0.03 || area > 60.0)
+						continue;
+					if(signedVolumeContribution(quad, center) < 0.0)
+						std::reverse(quad.begin(), quad.end());
+					IBKMK::Polygon3D p3(quad);
+					if(!p3.isValid())
+						continue;
+					VICUS::Surface s;
+					s.m_id = nextId++;
+					s.m_displayName = "Missing";
+					s.setPolygon3D(p3);
+					if(!s.geometry().isValid())
+						continue;
+					cur.push_back(s);
+					used[i] = used[j] = true;
+					++quads;
+					break;
+				}
+			}
+			if(quads > 0) {
+				room.setSurfaces(cur);
+				added += quads;
+			}
+		}
+	}
 	return added;
 }
 

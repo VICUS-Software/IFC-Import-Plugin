@@ -324,13 +324,15 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		// perpendicular partitions, and fail one of the two checks.
 		const double kMaxSideSeparation = 1.2;   // [m] wall assembly depth + clip-offset slack
 		const double kMinSideParallel   = 0.7;   // |cos| between side normals
+		// NOTE: the primary commit already registered its SB(s) with the opening, so
+		// op.spaceBoundaries() covers them — do NOT add bc.mergedSurface again
+		// (double-counting inflated the complement area cap and silently dropped
+		// the neighbor-space pieces of storey-straddling stairwell windows).
 		std::vector<Surface> committedSides;
 		for(const auto& sb : op.spaceBoundaries()) {
 			if(sb)
 				committedSides.push_back(sb->surface());
 		}
-		if(primaryCommitted)
-			committedSides.push_back(bc.mergedSurface);
 		// Relation of a further-space candidate to the already committed sides:
 		//  SR_None       — unrelated patch (phantom) -> skip
 		//  SR_Opposite   — other face of the same wall (interior door second side)
@@ -403,12 +405,21 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 				for(const Space::OpeningMatchCandidate& cc : allCands) {
 					if(!cc.parentSB || cc.area < 0.05)
 						continue;
-					if(sideRelation(cc.mergedSurface, cc.area) != SR_Complement)
+					SideRelation ccRel = sideRelation(cc.mergedSurface, cc.area);
+					if(op.m_id == debugOpeningId())
+						Logger::instance() << "  dbg-open: complement-check space='" << sc.space->m_name
+										   << "' sb='" << cc.parentSB->m_name << "' area=" << cc.area
+										   << " rel=" << int(ccRel);
+					if(ccRel != SR_Complement)
 						continue;
 					double ccElemArea = cc.openingElem ? cc.openingElem->openingArea() : 0.0;
 					double committedArea = 0.0;
 					for(const Surface& ref : committedSides)
 						committedArea += ref.area();
+					if(op.m_id == debugOpeningId())
+						Logger::instance() << "  dbg-open: complement-cap committed=" << committedArea
+										   << " cc=" << cc.area << " elem=" << ccElemArea
+										   << " sides=" << committedSides.size();
 					if(ccElemArea > 0.1 && committedArea + cc.area > 1.25 * ccElemArea)
 						continue;
 					sc.space->commitOpeningMatch(op, cc, convertOptions);

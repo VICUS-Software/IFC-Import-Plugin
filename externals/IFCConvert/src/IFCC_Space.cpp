@@ -1508,6 +1508,10 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			continue;
 		if(convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
 			continue;
+		// Columns never host windows/doors — hard exclusion independent of the
+		// dialog blocklist (user requirement).
+		if(spaceBoundary->typeRelatedElement() == BET_Column)
+			continue;
 
 		double searchDist = convertOptions.m_openingDistance;
 		searchDist = std::max(elem->thickness(), searchDist);
@@ -1545,6 +1549,8 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			// Virtual SBs bypass the type blocklist (their related type is
 			// BET_VirtualElement/BET_None, which the blocklist contains).
 			if(!spaceBoundary->isVirtual() && convertOptions.noSearchForOpenings(spaceBoundary->typeRelatedElement()))
+				continue;
+			if(spaceBoundary->typeRelatedElement() == BET_Column)
 				continue;
 
 			std::string elemGUID = spaceBoundary->guidRelatedElement();
@@ -1732,6 +1738,8 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 		if(!sb->isConstructionElement() && !sb->isVirtual())
 			continue;
 		if(!sb->isVirtual() && convertOptions.noSearchForOpenings(sb->typeRelatedElement()))
+			continue;
+		if(sb->typeRelatedElement() == BET_Column)
 			continue;
 
 		std::string elemGUID = sb->guidRelatedElement();
