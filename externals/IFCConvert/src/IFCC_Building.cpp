@@ -324,6 +324,12 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		// perpendicular partitions, and fail one of the two checks.
 		const double kMaxSideSeparation = 1.2;   // [m] wall assembly depth + clip-offset slack
 		const double kMinSideParallel   = 0.7;   // |cos| between side normals
+		// Complement pieces (window part in the NEIGHBOR space) frequently sit on a
+		// DIFFERENT wall-layer plane than the primary side — WSHH stairwell windows
+		// straddle two storeys whose facade SBs are 26cm apart ('Gipsputz - 2' vs
+		// 'Gipsputz - 4'). Allow this much plane offset for the complement test;
+		// interior partitions parallel to the facade sit further back and stay out.
+		const double kMaxComplementPlaneOffset = 0.4;   // [m]
 		// NOTE: the primary commit already registered its SB(s) with the opening, so
 		// op.spaceBoundaries() covers them — do NOT add bc.mergedSurface again
 		// (double-counting inflated the complement area cap and silently dropped
@@ -352,6 +358,7 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 			nc *= 1.0/ncLen;
 			const double dc = nc.scalarProduct(cand.centroid());
 			SideRelation rel = SR_None;
+			bool overlapsCommitted = false;
 			for(const Surface& ref : committedSides) {
 				IBKMK::Vector3D nr = newellNormal(ref.polygon());
 				double nrLen = nr.magnitude();
@@ -363,12 +370,33 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 					continue;
 				double dr = nr.scalarProduct(ref.centroid());
 				if(nc.scalarProduct(nr) < 0) dr = -dr;
-				if(cosAngle >= 0.99 && std::fabs(dc - dr) <= 0.05) {
-					// same plane: complement or duplicate?
-					Surface inter = ref.intersect(cand);
+				if(cosAngle >= 0.99 && std::fabs(dc - dr) <= kMaxComplementPlaneOffset) {
+					// Parallel plane within the wall assembly: complement, opposite face
+					// or duplicate — decided by the overlap of the PROJECTED regions.
+					// Offset planes must be projected first, Surface::intersect needs
+					// coplanar polygons.
+					Surface projCand = cand;
+					if(std::fabs(dc - dr) > 0.05) {
+						polygon3D_t moved = cand.polygon();
+						const IBKMK::Vector3D& p0 = ref.centroid();
+						for(IBKMK::Vector3D& v : moved) {
+							double d = nr.m_x*(v.m_x-p0.m_x) + nr.m_y*(v.m_y-p0.m_y) + nr.m_z*(v.m_z-p0.m_z);
+							v.m_x -= nr.m_x * d;
+							v.m_y -= nr.m_y * d;
+							v.m_z -= nr.m_z * d;
+						}
+						projCand = Surface(moved);
+					}
+					Surface inter = ref.intersect(projCand);
 					double ia = inter.isValid(1e-3) ? inter.area() : 0.0;
-					if(ia > 0.2 * candArea)
-						return SR_Duplicate;
+					if(ia > 0.2 * candArea) {
+						if(std::fabs(dc - dr) <= 0.05)
+							return SR_Duplicate;
+						// same window region seen from the other wall face — leave it to
+						// the strictly gated opposite-side path below
+						overlapsCommitted = true;
+						continue;
+					}
 					rel = SR_Complement;
 					continue;
 				}
@@ -376,6 +404,8 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 				if(dist <= kMaxSideSeparation && rel == SR_None)
 					rel = SR_Opposite;
 			}
+			if(overlapsCommitted)
+				return SR_Opposite;
 			return rel;
 		};
 		// Trust anchor: mirroring a wrong primary onto the wall's other face doubles the
@@ -472,6 +502,38 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 					   << matchedTopology << " topology + " << matchedStrict << " strict + "
 					   << matchedCoplanar << " coplanar + " << matchedMultiSpace
 					   << " multi-space of " << openings.size() << " openings";
+
+	// Full-outline expansion, LAST resort after all per-space/complement commits:
+	// a single-part opening hosted on a synthetic 'Missing' fill that still covers
+	// clearly less than the element outline has its remainder OUTSIDE every space
+	// boundary (WSHH stairwell arch windows against the storey-slab band that
+	// belongs to no room) — no complement can ever attach it. Grow the synthetic
+	// fill together with the hole; real construction hosts stay untouched.
+	// Runs after the multi-space pass so genuine neighbor-space complements always
+	// win over the expansion.
+	size_t expandedFills = 0;
+	for(Opening& op : openings) {
+		if(op.spaceBoundaries().size() != 1)
+			continue;
+		const std::shared_ptr<SpaceBoundary>& opSB = op.spaceBoundaries().front();
+		if(!opSB)
+			continue;
+		for(const auto& storey : m_storeys) {
+			bool done = false;
+			for(const auto& space : storey->spaces()) {
+				if(space->expandMissingHostToOpeningOutline(op, opSB, buildingElements, convertOptions)) {
+					++expandedFills;
+					done = true;
+					break;
+				}
+			}
+			if(done)
+				break;
+		}
+	}
+	if(expandedFills > 0)
+		Logger::instance() << "Building::updateStoreys: expanded " << expandedFills
+						   << " Missing-fill hosts to full opening outlines";
 
 	// Optional full map opening guid -> id/state for tracing specific windows
 	// reported from the GUI (env IFCC_LOG_OPENING_MAP=1).

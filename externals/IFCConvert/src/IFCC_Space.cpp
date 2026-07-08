@@ -1819,6 +1819,186 @@ void Space::commitOpeningMatch(Opening& opening,
 	}
 }
 
+bool Space::expandMissingHostToOpeningOutline(Opening& opening,
+											  const std::shared_ptr<SpaceBoundary>& openingSB,
+											  const BuildingElementsCollector& buildingElements,
+											  const ConvertOptions& convertOptions) {
+	if(!openingSB)
+		return false;
+	// The host must be a SYNTHETIC fill of this space — real construction
+	// surfaces are never modified.
+	std::shared_ptr<SpaceBoundary> host;
+	for(const auto& sb : m_spaceBoundaries) {
+		const std::vector<std::shared_ptr<SpaceBoundary>>& contained = sb->containedOpeningSpaceBoundaries();
+		if(std::find(contained.begin(), contained.end(), openingSB) != contained.end()) {
+			host = sb;
+			break;
+		}
+	}
+	if(!host || !host->isMissing()) {
+		if(host && opening.m_id == debugOpeningId())
+			Logger::instance() << "  dbg-open: EXPAND reject host not Missing sb='" << host->m_name << "'";
+		return false;
+	}
+
+	std::shared_ptr<BuildingElement> elem;
+	for(int id : opening.openingElementIds()) {
+		auto cand = buildingElements.fromID(id);
+		if(cand && isOpeningType(cand->type())) {
+			elem = cand;
+			break;
+		}
+		if(cand && !elem)
+			elem = cand;
+	}
+	double elemArea = elem ? elem->openingArea() : 0.0;
+	if(elemArea < 0.1) {
+		if(opening.m_id == debugOpeningId())
+			Logger::instance() << "  dbg-open: EXPAND reject no element area";
+		return false;
+	}
+	double committedArea = openingSB->surface().area();
+	if(committedArea >= 0.85 * elemArea)
+		return false;
+
+	const Surface& hostSurf = host->surface();
+	if(!hostSurf.isValid(convertOptions.m_distanceEps))
+		return false;
+	PlaneNormal plane(hostSurf.polygon());
+	if(!plane.m_valid)
+		return false;
+
+	// Full outline: opening-body vertices projected onto the host plane, then the
+	// 2D convex hull. Prefer the probable front/back faces — projecting the FULL
+	// body onto a host plane that is slightly tilted against the opening smears
+	// the (meters-long) extrusion into a blown-up hull.
+	const std::vector<Surface>& bodySurfs = !opening.surfaces().empty() ? opening.surfaces()
+																		: opening.surfacesCSGElement();
+	std::vector<IBKMK::Vector2D> pts2;
+	for(const Surface& os : bodySurfs) {
+		if(os.sideType() != Surface::ST_ProbableSide)
+			continue;
+		for(const IBKMK::Vector3D& v : os.polygon())
+			pts2.push_back(plane.convert3DPoint(v));
+	}
+	if(pts2.size() < 3) {
+		for(const Surface& os : bodySurfs)
+			for(const IBKMK::Vector3D& v : os.polygon())
+				pts2.push_back(plane.convert3DPoint(v));
+	}
+	if(pts2.size() < 3)
+		return false;
+	std::vector<IBKMK::Vector2D> hull = convexHull2D(pts2);
+	if(hull.size() < 3)
+		return false;
+	polygon3D_t hull3;
+	for(const IBKMK::Vector2D& p : hull)
+		hull3.push_back(plane.convert3DPointInv(p));
+	Surface hullSurf(hull3);
+	double hullArea = hullSurf.area();
+	// Sanity: real window/door outline, clearly more than the committed part.
+	// The tight upper cap keeps oversized projections out — expanding a hole
+	// beyond the element outline recreates the oversized-door-hole problem
+	// (opening hulls are frequently wider than the door leaf).
+	if(hullArea < committedArea + 0.05 || hullArea > 1.05 * elemArea) {
+		if(opening.m_id == debugOpeningId())
+			Logger::instance() << "  dbg-open: EXPAND reject hull gate hullArea=" << hullArea
+							   << " committed=" << committedArea << " elemArea=" << elemArea;
+		return false;
+	}
+
+	// The uncovered remainder is attached as a self-contained zero-depth FLAP:
+	// front face (outward, carries the remaining hole part) plus an identical
+	// inversely wound back plate. Every flap edge is shared by exactly those two
+	// faces, so the room stays closed; the host fill and with it every existing
+	// shell edge pairing stay UNTOUCHED (replacing the fill contour broke the
+	// exact edge matching with the old neighbor faces — T-vertices count as open).
+	// The flap volume contribution cancels out.
+	const double kHoleMargin = 0.05; // [m] hole must stay strictly inside the flap
+	IBKMK::Vector2D hc(0.0, 0.0);
+	for(const IBKMK::Vector2D& p : hull) {
+		hc.m_x += p.m_x;
+		hc.m_y += p.m_y;
+	}
+	hc.m_x /= double(hull.size());
+	hc.m_y /= double(hull.size());
+	auto scaledHull = [&hull, &hc, &plane](double offset) -> Surface {
+		polygon3D_t poly;
+		for(const IBKMK::Vector2D& p : hull) {
+			IBKMK::Vector2D d(p.m_x - hc.m_x, p.m_y - hc.m_y);
+			double len = std::sqrt(d.m_x*d.m_x + d.m_y*d.m_y);
+			if(len < 1e-9 || len + offset < 1e-9) {
+				poly.push_back(plane.convert3DPointInv(p));
+				continue;
+			}
+			double f = (len + offset) / len;
+			poly.push_back(plane.convert3DPointInv(IBKMK::Vector2D(hc.m_x + d.m_x*f, hc.m_y + d.m_y*f)));
+		}
+		return Surface(poly);
+	};
+	Surface grownSurf = scaledHull(kHoleMargin);
+	Surface shrunkSurf = scaledHull(-0.02);
+	if(!grownSurf.isValid(convertOptions.m_distanceEps) || !shrunkSurf.isValid(convertOptions.m_distanceEps))
+		return false;
+
+	const IBKMK::Vector3D hostN = newellNormal(hostSurf.polygon());
+	const IBKMK::Vector3D backN(-hostN.m_x, -hostN.m_y, -hostN.m_z);
+	// Flap regions: grown outline minus the existing fill.
+	Surface::IntersectionResult ir = hostSurf.intersect2(grownSurf);
+	size_t flapsAdded = 0;
+	double holeAreaAdded = 0.0;
+	for(size_t di=0; di<ir.m_diffClipMinusBase.size(); ++di) {
+		const Surface& flapRegion = ir.m_diffClipMinusBase[di];
+		if(!flapRegion.isValid(convertOptions.m_distanceEps) || flapRegion.area() < 0.02)
+			continue;
+		if(di < ir.m_holesClipMinusBase.size() && !ir.m_holesClipMinusBase[di].empty())
+			continue;
+		if(flapRegion.area() > elemArea)
+			continue; // runaway region — not a window remainder
+		// Remaining hole part inside this flap (shrunk so it never touches the rim).
+		Surface holePiece = flapRegion.intersect(shrunkSurf);
+		if(!holePiece.isValid(convertOptions.m_distanceEps) || holePiece.area() < 0.05)
+			continue;
+
+		std::shared_ptr<SpaceBoundary> flapSB(new SpaceBoundary(GUID_maker::instance().guid()));
+		flapSB->setForMissingElement("Missing", *this, false);
+		if(!flapSB->fetchGeometryFromBuildingElement(alignedWinding(flapRegion, hostN), convertOptions))
+			continue;
+		// 'MissingBack' (not 'Missing'): the healer must neither coalesce the back
+		// plate with other fills (pass 1b matches on the name) nor drop it as a
+		// covered coplanar duplicate (pass 1 protects the name) — losing it would
+		// re-open every flap edge.
+		std::shared_ptr<SpaceBoundary> backSB(new SpaceBoundary(GUID_maker::instance().guid()));
+		backSB->setForMissingElement("MissingBack", *this, false);
+		if(!backSB->fetchGeometryFromBuildingElement(alignedWinding(flapRegion, backN), convertOptions))
+			continue;
+
+		std::shared_ptr<SpaceBoundary> holeSB(new SpaceBoundary(GUID_maker::instance().guid()));
+		holeSB->setFromSpaceBoundaryWithSurface(*openingSB, alignedWinding(holePiece, hostN));
+		holeSB->m_openingId = openingSB->m_openingId;
+		flapSB->addContainedOpeningSpaceBoundaries(holeSB);
+		opening.addSpaceBoundary(holeSB);
+
+		m_spaceBoundaries.push_back(flapSB);
+		m_spaceBoundaries.push_back(backSB);
+		++flapsAdded;
+		holeAreaAdded += holePiece.area();
+	}
+	if(flapsAdded == 0) {
+		if(opening.m_id == debugOpeningId())
+			Logger::instance() << "  dbg-open: EXPAND no usable flap region (diffs="
+							   << ir.m_diffClipMinusBase.size() << ")";
+		return false;
+	}
+
+	Logger::instance() << "space-openings: EXPAND-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+					   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
+					   << " committed=" << committedArea << " outline=" << hullArea
+					   << " elemArea=" << elemArea << " flaps=" << flapsAdded
+					   << " holeAreaAdded=" << holeAreaAdded;
+	return true;
+}
+
 std::vector<Surface> Space::surfacesOrg() const {
 	return m_surfacesOrg;
 }

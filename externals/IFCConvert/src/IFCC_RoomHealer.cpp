@@ -189,7 +189,11 @@ Pass1Result clipCoplanarOverlaps(std::vector<VICUS::Surface>& surfs) {
 			centroid += v;
 		centroid *= 1.0/double(poly.size());
 		info[i].d = info[i].n.scalarProduct(centroid);
-		info[i].protectedSurf = !surfs[i].subSurfaces().empty();
+		// 'MissingBack' plates are the inversely wound backs of zero-depth opening
+		// flaps — coplanar with and fully covered by their front face BY DESIGN.
+		// Dropping them as duplicates re-opens every flap edge.
+		info[i].protectedSurf = !surfs[i].subSurfaces().empty()
+								|| surfs[i].m_displayName == "MissingBack";
 	}
 
 	// Order in which surfaces claim their area: protected (with subsurfaces) first,

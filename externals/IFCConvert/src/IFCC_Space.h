@@ -251,6 +251,21 @@ public:
 							const OpeningMatchCandidate& candidate,
 							const ConvertOptions& convertOptions);
 
+	/*! Attach the uncovered remainder of an opening as a zero-depth Missing FLAP
+		(front face carrying the remaining hole part + inversely wound back plate).
+		Applies only when the opening SB is hosted by a synthetic 'Missing' SB of
+		this space and covers clearly less than the opening element area — the
+		uncovered remainder then lies outside every space boundary (e.g. against a
+		storey-slab band that belongs to no room), so no complement commit can ever
+		attach it. Neither the host fill nor any real construction surface is
+		modified; the flap is self-closed, its volume contribution cancels out.
+		\return true if at least one flap with a hole part was added.
+	*/
+	bool expandMissingHostToOpeningOutline(Opening& opening,
+										   const std::shared_ptr<SpaceBoundary>& openingSB,
+										   const BuildingElementsCollector& buildingElements,
+										   const ConvertOptions& convertOptions);
+
 	/*! If space boundaries with the same surface exist one of whem will be removed.
 	*/
 	void removeDublicatedSpaceBoundaries(const ConvertOptions& convertOptions);
