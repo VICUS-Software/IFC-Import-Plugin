@@ -196,6 +196,10 @@ public:
 			wall layers (Gipsputz vs. Gipskarton) that both intersect the full
 			window outline: the layer closest to the opening wins. */
 		double                            dist = 1e20;
+		/*! Extent of the opening BODY along the patch plane normal [m], -1 = unknown.
+			The true wall is CROSSED by the body (span = extrusion depth); phantom
+			patches on partitions the blown-up body slides along have a small span. */
+		double                            bodySpan = -1.0;
 	};
 
 	/*! Compare two opening-match candidates: larger intersection area wins, but

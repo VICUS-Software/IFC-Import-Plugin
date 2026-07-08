@@ -855,6 +855,29 @@ static int debugOpeningId() {
 	return id;
 }
 
+/*! Extent of the opening body along the patch plane normal [m] (-1 = unknown).
+	See OpeningMatchCandidate::bodySpan. */
+static double openingSpanAlongPatch(const Opening& op, const Surface& patch) {
+	IBKMK::Vector3D n = newellNormal(patch.polygon());
+	double len = n.magnitude();
+	if(len < 1e-9)
+		return -1.0;
+	n *= 1.0/len;
+	const IBKMK::Vector3D& p0 = patch.centroid();
+	const std::vector<Surface>& surfs = !op.surfaces().empty() ? op.surfaces() : op.surfacesCSGElement();
+	double mn = 1e20, mx = -1e20;
+	bool have = false;
+	for(const Surface& s : surfs) {
+		for(const IBKMK::Vector3D& v : s.polygon()) {
+			double d = n.scalarProduct(v - p0);
+			mn = std::min(mn, d);
+			mx = std::max(mx, d);
+			have = true;
+		}
+	}
+	return have ? mx - mn : -1.0;
+}
+
 /*! True when the opening body is upright (vertical extent dominates the horizontal
 	footprint) — a facade window/door. Such openings must never attach to a
 	near-horizontal surface (glass floors, ceiling fills); flat skylight bodies in
@@ -1331,6 +1354,25 @@ bool Space::isBetterOpeningMatch(const OpeningMatchCandidate& cand, const Openin
 	}
 	const double rankArea = std::min(cand.area, areaCap);
 	const double bestRankArea = std::min(best.area, areaCap);
+	// The true wall is CROSSED by the opening body (span along the patch normal =
+	// extrusion depth), phantom patches on partitions the blown-up body slides
+	// along have a small span (WSHH: Gipskaartonplatte patches 3.6-4.5 m² > window
+	// area, body runs alongside). Prefer the crossed wall even when its (partial)
+	// patch is smaller — down to 40% of the rival.
+	if(cand.bodySpan >= 0.0 && best.bodySpan >= 0.0) {
+		if(cand.bodySpan > 2.0 * best.bodySpan + 0.01 && rankArea > 0.4 * bestRankArea)
+			return true;
+		if(best.bodySpan > 2.0 * cand.bodySpan + 0.01 && bestRankArea > 0.4 * rankArea)
+			return false;
+	}
+	// A patch far from the window element (>4m) loses against a near one (<2m)
+	// even when bigger: blown-up boxes cross interior walls PARALLEL to the facade
+	// (corridor walls) with full-size phantom patches — the spans tie there and
+	// only the element position tells the walls apart.
+	if(cand.dist < 2.0 && best.dist > 4.0 && rankArea > 0.4 * bestRankArea)
+		return true;
+	if(best.dist < 2.0 && cand.dist > 4.0 && bestRankArea > 0.4 * rankArea)
+		return false;
 	if(rankArea > bestRankArea * 1.05)
 		return true;
 	if(rankArea > bestRankArea * 0.95 && cand.dist < best.dist)
@@ -1432,7 +1474,8 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			}
 			matchDist = elemDist;
 		}
-		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist};
+		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist,
+										  openingSpanAlongPatch(currOp, merged)};
 		if(it == bestByOp.end() || isBetterOpeningMatch(cand, it->second)) {
 			bestByOp[currOp.m_id] = cand;
 		}
@@ -1743,7 +1786,8 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 			}
 			matchDist = elemDist;
 		}
-		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist};
+		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist,
+										  openingSpanAlongPatch(opening, merged)};
 		if(allCandidates != nullptr)
 			allCandidates->push_back(cand);
 		if(isBetterOpeningMatch(cand, best))
