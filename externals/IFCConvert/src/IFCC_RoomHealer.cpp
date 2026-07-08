@@ -606,6 +606,101 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 			}
 		}
 	}
+
+	// Pass 3c: tolerant loop chaining. VICUS::Room::closingPolygons chains with a
+	// 3 cm tolerance and drops non-planar loops entirely — fragmented tessellation
+	// shells (WSHH cellars/attics) leave gaps whose edges join only within ~15 cm
+	// and bow a few cm out of plane. Chain generously and PROJECT slightly warped
+	// loops onto their fit plane instead of dropping them.
+	{
+		const double kJoinTol = 0.15;
+		const double kMaxPlaneDev = 0.20;
+		const std::vector<VICUS::Room::UncoveredSegment>& segs3 = room.uncoveredSegments();
+		if(segs3.size() >= 3 && segs3.size() <= 200) {
+			std::vector<VICUS::Surface> cur = room.surfaces();
+			const IBKMK::Vector3D center = bboxCenter(cur);
+			std::vector<bool> used(segs3.size(), false);
+			int loopsAdded = 0;
+			for(size_t si=0; si<segs3.size() && loopsAdded < 20; ++si) {
+				if(used[si]) continue;
+				std::vector<IBKMK::Vector3D> chain{segs3[si].m_start, segs3[si].m_end};
+				used[si] = true;
+				bool closed = false;
+				for(int guard=0; guard<200; ++guard) {
+					const IBKMK::Vector3D& tail = chain.back();
+					// closed?
+					if(chain.size() >= 4 && (tail - chain.front()).magnitude() <= kJoinTol) {
+						closed = true;
+						break;
+					}
+					double bestD = kJoinTol;
+					size_t bestJ = segs3.size();
+					bool bestFlip = false;
+					for(size_t j=0; j<segs3.size(); ++j) {
+						if(used[j]) continue;
+						double dS = (segs3[j].m_start - tail).magnitude();
+						double dE = (segs3[j].m_end - tail).magnitude();
+						if(dS < bestD) { bestD = dS; bestJ = j; bestFlip = false; }
+						if(dE < bestD) { bestD = dE; bestJ = j; bestFlip = true; }
+					}
+					if(bestJ == segs3.size())
+						break;
+					used[bestJ] = true;
+					chain.push_back(bestFlip ? segs3[bestJ].m_start : segs3[bestJ].m_end);
+				}
+				if(!closed || chain.size() < 3)
+					continue;
+				// drop near-duplicate consecutive points
+				std::vector<IBKMK::Vector3D> loop;
+				for(const IBKMK::Vector3D& v : chain) {
+					if(loop.empty() || (v - loop.back()).magnitude() > 0.02)
+						loop.push_back(v);
+				}
+				while(loop.size() >= 3 && (loop.back() - loop.front()).magnitude() <= 0.02)
+					loop.pop_back();
+				if(loop.size() < 3)
+					continue;
+				// fit plane (Newell) and project
+				IBKMK::Vector3D n = newellNormal(loop);
+				double len = n.magnitude();
+				if(len < 1e-6)
+					continue;
+				n *= 1.0/len;
+				IBKMK::Vector3D c0(0,0,0);
+				for(const IBKMK::Vector3D& v : loop) c0 += v;
+				c0 *= 1.0/double(loop.size());
+				double maxDev = 0.0;
+				for(const IBKMK::Vector3D& v : loop)
+					maxDev = std::max(maxDev, std::fabs(n.scalarProduct(v - c0)));
+				if(maxDev > kMaxPlaneDev)
+					continue;
+				if(maxDev > 1e-6) {
+					for(IBKMK::Vector3D& v : loop)
+						v -= n * n.scalarProduct(v - c0);
+				}
+				double area = polygonArea3D(loop);
+				if(area < 0.05 || area > 500.0)
+					continue;
+				if(signedVolumeContribution(loop, center) < 0.0)
+					std::reverse(loop.begin(), loop.end());
+				IBKMK::Polygon3D p3(loop);
+				if(!p3.isValid())
+					continue;
+				VICUS::Surface s;
+				s.m_id = nextId++;
+				s.m_displayName = "Missing";
+				s.setPolygon3D(p3);
+				if(!s.geometry().isValid())
+					continue;
+				cur.push_back(s);
+				++loopsAdded;
+			}
+			if(loopsAdded > 0) {
+				room.setSurfaces(cur);
+				added += loopsAdded;
+			}
+		}
+	}
 	return added;
 }
 
