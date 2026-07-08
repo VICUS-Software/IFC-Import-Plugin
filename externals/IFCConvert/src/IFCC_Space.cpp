@@ -1312,6 +1312,7 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 	// first match attached openings to the first geometrically-compatible SB — which
 	// could be a small inward-facing ledge/niche rather than the main wall face.
 	std::map<int, Space::OpeningMatchCandidate> bestByOp;
+	std::map<int, std::vector<Space::OpeningMatchCandidate>> candsByOp;
 
 	auto resolveOpeningElem = [&](const Opening& op) -> std::shared_ptr<BuildingElement> {
 		std::shared_ptr<BuildingElement> oe;
@@ -1390,6 +1391,20 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		if(it == bestByOp.end() || isBetterOpeningMatch(cand, it->second)) {
 			bestByOp[currOp.m_id] = cand;
 		}
+		// Keep ALL per-SB candidates: an opening spanning several coplanar wall
+		// fragments needs a split commit (one hole piece per fragment) — see pass 2.
+		std::vector<Space::OpeningMatchCandidate>& all = candsByOp[currOp.m_id];
+		bool replaced = false;
+		for(Space::OpeningMatchCandidate& c : all) {
+			if(c.parentSB == sb) {
+				if(isBetterOpeningMatch(cand, c))
+					c = cand;
+				replaced = true;
+				break;
+			}
+		}
+		if(!replaced)
+			all.push_back(cand);
 	};
 
 	// Pass 1a: SB-first iteration over openings linked via m_containedOpenings.
@@ -1472,24 +1487,85 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			continue;
 		if(fitOp->hasSpaceBoundaryInSpace(m_guid))
 			continue;
+		// An opening frequently spans SEVERAL coplanar wall fragments (walls split by
+		// carve/anchoring) — committing only the best fragment cuts a partial hole
+		// and the window visually overlaps the untouched neighbor fragment. Collect
+		// all coplanar, non-overlapping sibling candidates as split pieces.
+		std::vector<const OpeningMatchCandidate*> pieces;
+		pieces.push_back(&cand);
+		double combinedArea = cand.area;
+		{
+			IBKMK::Vector3D nBest = newellNormal(cand.mergedSurface.polygon());
+			double nBestLen = nBest.magnitude();
+			auto candsIt = candsByOp.find(opid);
+			if(nBestLen > 1e-9 && candsIt != candsByOp.end()) {
+				nBest *= 1.0/nBestLen;
+				double dBest = nBest.scalarProduct(cand.mergedSurface.centroid());
+				for(const OpeningMatchCandidate& other : candsIt->second) {
+					if(other.parentSB == cand.parentSB || !other.parentSB || other.area < 0.05)
+						continue;
+					IBKMK::Vector3D nO = newellNormal(other.mergedSurface.polygon());
+					double nOLen = nO.magnitude();
+					if(nOLen < 1e-9)
+						continue;
+					nO *= 1.0/nOLen;
+					double dot = nBest.scalarProduct(nO);
+					if(std::fabs(dot) < 0.99)
+						continue;
+					double dO = nO.scalarProduct(other.mergedSurface.centroid());
+					if(dot < 0) dO = -dO;
+					if(std::fabs(dBest - dO) > 0.05)
+						continue;
+					// piece must not overlap an already accepted piece
+					bool overlaps = false;
+					for(const OpeningMatchCandidate* p : pieces) {
+						Surface inter = p->mergedSurface.intersect(other.mergedSurface);
+						if(inter.isValid(convertOptions.m_distanceEps) && inter.area() > 0.2 * other.area) {
+							overlaps = true;
+							break;
+						}
+					}
+					if(overlaps)
+						continue;
+					pieces.push_back(&other);
+					combinedArea += other.area;
+				}
+			}
+			// cap: combined pieces must stay within the window/door outline
+			if(cand.openingElem) {
+				double elemArea = cand.openingElem->openingArea();
+				while(elemArea > 0.1 && combinedArea > 1.2 * elemArea && pieces.size() > 1) {
+					combinedArea -= pieces.back()->area;
+					pieces.pop_back();
+				}
+			}
+		}
 		// Defer low-coverage matches to the building-level cross-space fallback.
 		// Per-space matching only sees SBs whose element hosts the opening (plus
 		// synthetic Missing SBs) — committing a sliver here (e.g. 0.86 m² of a
 		// 3.87 m² window grazing a Missing shell fill) permanently blocks the
 		// cross-space pass from attaching the full-size match on the correct wall.
 		// The same candidate stays reachable there, so nothing is lost by waiting.
+		// The coverage test uses the COMBINED area of all split pieces.
 		if(cand.openingElem) {
 			double elemArea = cand.openingElem->openingArea();
-			if(elemArea > 0.1 && cand.area < 0.5 * elemArea) {
+			if(elemArea > 0.1 && combinedArea < 0.5 * elemArea) {
 				Logger::instance() << "space-openings: DEFER low-coverage space='" << spaceTag << "'"
 								   << " opening id=" << opid << " name='" << fitOp->m_name << "'"
-								   << " area=" << cand.area << " elemArea=" << elemArea
+								   << " area=" << combinedArea << " elemArea=" << elemArea
 								   << " sb='" << cand.parentSB->m_name << "'";
 				continue;
 			}
 		}
-		addOpeningSpaceBoundary(cand.mergedSurface, *fitOp, cand.parentSB, cand.openingElem,
-								m_longName, openingSpaceBoundaries, *this, convertOptions);
+		for(const OpeningMatchCandidate* p : pieces) {
+			addOpeningSpaceBoundary(p->mergedSurface, *fitOp, p->parentSB, p->openingElem,
+									m_longName, openingSpaceBoundaries, *this, convertOptions);
+			if(p != pieces.front()) {
+				Logger::instance() << "space-openings: SPLIT-COMMIT space='" << spaceTag << "'"
+								   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
+								   << " -> sb='" << p->parentSB->m_name << "' area=" << p->area;
+			}
+		}
 		++committed;
 		Logger::instance() << "space-openings: COMMIT space='" << spaceTag << "'"
 						   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
@@ -2232,21 +2308,50 @@ void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
 			pieceSBs.push_back(clone);
 		}
 
-		// Reattach each opening SB to the piece it overlaps most.
+		// Reattach opening SBs. An opening frequently overlaps SEVERAL pieces (walls
+		// fragmented by carve/anchoring) — cutting its hole only into the best piece
+		// leaves the window poking through the neighbor piece without a hole there.
+		// Split the opening SB: every piece it substantially intersects receives the
+		// clipped part; the original keeps the largest part.
 		for(const auto& openingSB : attachedOpenings) {
-			std::shared_ptr<SpaceBoundary> bestPiece = pieceSBs.front();
-			double bestArea = 0.0;
+			struct OpeningPart {
+				std::shared_ptr<SpaceBoundary> m_piece;
+				Surface m_inter;
+			};
+			std::vector<OpeningPart> parts;
 			for(const auto& piece : pieceSBs) {
 				Surface inter = piece->surface().intersect(openingSB->surface());
 				if(!inter.isValid(EPS))
 					continue;
-				double a = inter.area();
-				if(a > bestArea) {
-					bestArea = a;
-					bestPiece = piece;
-				}
+				if(inter.area() < 0.02)
+					continue;
+				parts.push_back(OpeningPart{piece, inter});
 			}
-			bestPiece->addContainedOpeningSpaceBoundaries(openingSB);
+			if(parts.empty()) {
+				pieceSBs.front()->addContainedOpeningSpaceBoundaries(openingSB);
+				continue;
+			}
+			std::sort(parts.begin(), parts.end(), [](const OpeningPart& a, const OpeningPart& b) {
+				return a.m_inter.area() > b.m_inter.area();
+			});
+			if(parts.size() == 1) {
+				parts[0].m_piece->addContainedOpeningSpaceBoundaries(openingSB);
+				continue;
+			}
+			// original keeps the largest clipped part
+			Surface mainInter = parts[0].m_inter;
+			mainInter.set(openingSB->surface().id(), openingSB->surface().elementId(),
+						  openingSB->surface().name(), openingSB->surface().isVirtual());
+			openingSB->fetchGeometryFromBuildingElement(mainInter, convertOptions);
+			parts[0].m_piece->addContainedOpeningSpaceBoundaries(openingSB);
+			for(size_t opi=1; opi<parts.size(); ++opi) {
+				std::shared_ptr<SpaceBoundary> clone(new SpaceBoundary(GUID_maker::instance().guid()));
+				clone->setFromSpaceBoundaryWithSurface(*openingSB, parts[opi].m_inter);
+				clone->m_openingId = openingSB->m_openingId;
+				parts[opi].m_piece->addContainedOpeningSpaceBoundaries(clone);
+			}
+			Logger::instance() << "anchor-shell: SPLIT opening SB '" << openingSB->m_name
+							   << "' across " << parts.size() << " wall pieces";
 		}
 	}
 	if(!clonedSBs.empty()) {
