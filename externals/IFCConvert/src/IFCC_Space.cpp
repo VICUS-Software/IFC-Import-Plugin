@@ -855,6 +855,29 @@ static int debugOpeningId() {
 	return id;
 }
 
+/*! Openings hosted (IfcRelVoidsElement) in a WALL never punch holes into
+	near-horizontal surfaces. Broken WSHH bodies (windows authored lying flat or
+	extruded through the storey) otherwise per-face-match ceiling/floor fills —
+	the trusted IFC topology says the hole belongs into a wall. Roof/slab-hosted
+	openings (skylights, floor hatches) are unaffected. */
+static bool rejectHorizontalForWallOpening(const Opening& op, const std::shared_ptr<SpaceBoundary>& sb,
+										   const BuildingElementsCollector& buildingElements) {
+	IBKMK::Vector3D n = newellNormal(sb->surface().polygon());
+	double len = n.magnitude();
+	if(len < 1e-9)
+		return false;
+	if(std::fabs(n.m_z / len) <= 0.75)
+		return false; // vertical or sloped surface — always allowed
+	std::vector<int> hosts;
+	op.insertContainingElementId(hosts);
+	for(int id : hosts) {
+		auto elem = buildingElements.fromID(id);
+		if(elem && elem->type() == BET_Wall)
+			return true;
+	}
+	return false;
+}
+
 /*! Extent of the opening body along the patch plane normal [m] (-1 = unknown).
 	See OpeningMatchCandidate::bodySpan. */
 static double openingSpanAlongPatch(const Opening& op, const Surface& patch) {
@@ -1436,6 +1459,11 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		if(!trace.triedSbNames.empty())
 			trace.triedSbNames += ", ";
 		trace.triedSbNames += sb->m_name;
+		if(rejectHorizontalForWallOpening(currOp, sb, buildingElements)) {
+			if(currOp.m_id == debugOpeningId())
+				Logger::instance() << "  dbg-open: REJECT wall-hosted-vs-horizontal sb='" << sb->m_name << "'";
+			return;
+		}
 		double matchDist = 1e20;
 		Surface merged = computeOpeningMatchSurface(currOp, sb, convertOptions, searchDist, false, &matchDist);
 		if(!merged.isValid(convertOptions.m_distanceEps))
@@ -1751,6 +1779,11 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 		}
 		// If sbElem is null (synthetic Missing SB) we still allow the attempt —
 		// the building-level fallback calls us precisely for orphan openings.
+		if(rejectHorizontalForWallOpening(opening, sb, buildingElements)) {
+			if(opening.m_id == debugOpeningId())
+				Logger::instance() << "  dbg-open: REJECT(fb) wall-hosted-vs-horizontal sb='" << sb->m_name << "'";
+			continue;
+		}
 
 		double searchDist = convertOptions.m_openingDistance;
 		if(sbElem)
