@@ -324,31 +324,57 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		// perpendicular partitions, and fail one of the two checks.
 		const double kMaxSideSeparation = 1.2;   // [m] wall assembly depth + clip-offset slack
 		const double kMinSideParallel   = 0.7;   // |cos| between side normals
-		std::vector<const Surface*> committedSides;
+		std::vector<Surface> committedSides;
 		for(const auto& sb : op.spaceBoundaries()) {
 			if(sb)
-				committedSides.push_back(&sb->surface());
+				committedSides.push_back(sb->surface());
 		}
 		if(primaryCommitted)
-			committedSides.push_back(&bc.mergedSurface);
-		auto isOppositeSide = [&committedSides, kMaxSideSeparation, kMinSideParallel](const Surface& cand) -> bool {
+			committedSides.push_back(bc.mergedSurface);
+		// Relation of a further-space candidate to the already committed sides:
+		//  SR_None       — unrelated patch (phantom) -> skip
+		//  SR_Opposite   — other face of the same wall (interior door second side)
+		//  SR_Complement — SAME plane, non-overlapping: the window part in a
+		//                  NEIGHBOR space. Stairwell windows sit at half-storey
+		//                  height and straddle two storey spaces — each space's
+		//                  facade SB covers only a fraction, so the per-piece
+		//                  coverage gates must not apply (the pieces jointly
+		//                  cover the window).
+		//  SR_Duplicate  — same plane, overlapping an existing side -> skip
+		enum SideRelation { SR_None, SR_Opposite, SR_Complement, SR_Duplicate };
+		auto sideRelation = [&](const Surface& cand, double candArea) -> SideRelation {
 			IBKMK::Vector3D nc = newellNormal(cand.polygon());
 			double ncLen = nc.magnitude();
 			if(ncLen < 1e-10)
-				return false;
-			for(const Surface* ref : committedSides) {
-				IBKMK::Vector3D nr = newellNormal(ref->polygon());
+				return SR_None;
+			nc *= 1.0/ncLen;
+			const double dc = nc.scalarProduct(cand.centroid());
+			SideRelation rel = SR_None;
+			for(const Surface& ref : committedSides) {
+				IBKMK::Vector3D nr = newellNormal(ref.polygon());
 				double nrLen = nr.magnitude();
 				if(nrLen < 1e-10)
 					continue;
-				double cosAngle = std::fabs(nc.scalarProduct(nr)) / (ncLen * nrLen);
+				nr *= 1.0/nrLen;
+				double cosAngle = std::fabs(nc.scalarProduct(nr));
 				if(cosAngle < kMinSideParallel)
 					continue;
-				double dist = (cand.centroid() - ref->centroid()).magnitude();
-				if(dist <= kMaxSideSeparation)
-					return true;
+				double dr = nr.scalarProduct(ref.centroid());
+				if(nc.scalarProduct(nr) < 0) dr = -dr;
+				if(cosAngle >= 0.99 && std::fabs(dc - dr) <= 0.05) {
+					// same plane: complement or duplicate?
+					Surface inter = ref.intersect(cand);
+					double ia = inter.isValid(1e-3) ? inter.area() : 0.0;
+					if(ia > 0.2 * candArea)
+						return SR_Duplicate;
+					rel = SR_Complement;
+					continue;
+				}
+				double dist = (cand.centroid() - ref.centroid()).magnitude();
+				if(dist <= kMaxSideSeparation && rel == SR_None)
+					rel = SR_Opposite;
 			}
-			return false;
+			return rel;
 		};
 		// Trust anchor: mirroring a wrong primary onto the wall's other face doubles the
 		// damage (WSHH box openings glued to an interior partition get a second copy in
@@ -367,36 +393,68 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 				continue;
 			// Must be the opposite face of an already-attached side — otherwise it's a
 			// lateral/perpendicular phantom intersection of an oversized opening body.
-			if(!isOppositeSide(sc.cand.mergedSurface)) {
+			// Complement pieces (window part in the neighbor space, SAME plane) are
+			// often hidden behind the space's best candidate — search the space's
+			// FULL candidate list for them first.
+			{
+				std::vector<Space::OpeningMatchCandidate> allCands;
+				sc.space->findBestOpeningMatch(op, buildingElements, convertOptions,
+											   sc.ignoredFilter, sc.fromCoplanar, &allCands);
+				for(const Space::OpeningMatchCandidate& cc : allCands) {
+					if(!cc.parentSB || cc.area < 0.05)
+						continue;
+					if(sideRelation(cc.mergedSurface, cc.area) != SR_Complement)
+						continue;
+					double ccElemArea = cc.openingElem ? cc.openingElem->openingArea() : 0.0;
+					double committedArea = 0.0;
+					for(const Surface& ref : committedSides)
+						committedArea += ref.area();
+					if(ccElemArea > 0.1 && committedArea + cc.area > 1.25 * ccElemArea)
+						continue;
+					sc.space->commitOpeningMatch(op, cc, convertOptions);
+					committedSides.push_back(cc.mergedSurface);
+					++matchedMultiSpace;
+					Logger::instance() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
+									   << " name='" << op.m_name << "' space='" << sc.space->m_name << "'"
+									   << " sb='" << cc.parentSB->m_name << "' area=" << cc.area
+									   << " rel=complement";
+				}
+			}
+			const SideRelation rel = sideRelation(sc.cand.mergedSurface, sc.cand.area);
+			if(rel != SR_Opposite) {
 				if(op.m_id == debugOpeningId())
-					Logger::instance() << "  dbg-open: MULTI-SPACE reject (not opposite side) space='"
+					Logger::instance() << "  dbg-open: MULTI-SPACE reject (rel=" << int(rel) << ") space='"
 									   << sc.space->m_name << "' sb='" << sc.cand.parentSB->m_name << "'";
 				continue;
 			}
 			double scElemArea = sc.cand.openingElem ? sc.cand.openingElem->openingArea() : 0.0;
 			const bool hasAreaSignal = scElemArea > 0.1;
 			const bool hasDistSignal = sc.cand.dist < 1e19;
-			// Without any quality signal (no element geometry AND no position) a
-			// further-space commit is guesswork — leave it to the primary only.
-			if(!hasAreaSignal && !hasDistSignal)
-				continue;
-			if(hasAreaSignal && sc.cand.area < 0.5 * scElemArea)
-				continue;
-			if(sc.cand.area < 0.5 * bc.area)
-				continue;
-			if(hasDistSignal) {
-				// Allow slightly beyond the trusted distance when even the best match
-				// sits far out (placement origin at a corner of the opening box).
-				double distCap = std::max(kTrustedElemDist, bc.dist < 1e19 ? 1.25 * bc.dist : kTrustedElemDist);
-				if(sc.cand.dist > distCap)
+			{
+				// Opposite wall face: must look like a full-quality match on its own.
+				// Without any quality signal (no element geometry AND no position) a
+				// further-space commit is guesswork — leave it to the primary only.
+				if(!hasAreaSignal && !hasDistSignal)
 					continue;
+				if(hasAreaSignal && sc.cand.area < 0.5 * scElemArea)
+					continue;
+				if(sc.cand.area < 0.5 * bc.area)
+					continue;
+				if(hasDistSignal) {
+					// Allow slightly beyond the trusted distance when even the best match
+					// sits far out (placement origin at a corner of the opening box).
+					double distCap = std::max(kTrustedElemDist, bc.dist < 1e19 ? 1.25 * bc.dist : kTrustedElemDist);
+					if(sc.cand.dist > distCap)
+						continue;
+				}
 			}
 			sc.space->commitOpeningMatch(op, sc.cand, convertOptions);
+			committedSides.push_back(sc.cand.mergedSurface);
 			++matchedMultiSpace;
 			Logger::instance() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
 							   << " name='" << op.m_name << "' space='" << sc.space->m_name << "'"
 							   << " sb='" << sc.cand.parentSB->m_name << "' area=" << sc.cand.area
-							   << " dist=" << sc.cand.dist;
+							   << " dist=" << sc.cand.dist << " rel=" << (rel == SR_Complement ? "complement" : "opposite");
 		}
 	}
 	Logger::instance() << "Building::updateStoreys: cross-space fallback matched "
@@ -404,6 +462,14 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 					   << matchedCoplanar << " coplanar + " << matchedMultiSpace
 					   << " multi-space of " << openings.size() << " openings";
 
+	// Optional full map opening guid -> id/state for tracing specific windows
+	// reported from the GUI (env IFCC_LOG_OPENING_MAP=1).
+	if(std::getenv("IFCC_LOG_OPENING_MAP") != nullptr) {
+		for(const Opening& op : openings) {
+			Logger::instance() << "opening-map id=" << op.m_id << " guid=" << op.guid()
+							   << " name='" << op.m_name << "' sbCount=" << op.spaceBoundaries().size();
+		}
+	}
 	// Post-mortem: every window/door opening still without any space boundary is a
 	// lost subsurface — log them with the data needed to debug (IFCC_DEBUG_OPENING_ID).
 	for(const Opening& op : openings) {
