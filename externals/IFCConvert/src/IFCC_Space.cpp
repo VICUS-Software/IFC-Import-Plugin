@@ -1536,55 +1536,17 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		// carve/anchoring) — committing only the best fragment cuts a partial hole
 		// and the window visually overlaps the untouched neighbor fragment. Collect
 		// all coplanar, non-overlapping sibling candidates as split pieces.
-		std::vector<const OpeningMatchCandidate*> pieces;
-		pieces.push_back(&cand);
-		double combinedArea = cand.area;
+		std::vector<OpeningMatchCandidate> pieces;
 		{
-			IBKMK::Vector3D nBest = newellNormal(cand.mergedSurface.polygon());
-			double nBestLen = nBest.magnitude();
 			auto candsIt = candsByOp.find(opid);
-			if(nBestLen > 1e-9 && candsIt != candsByOp.end()) {
-				nBest *= 1.0/nBestLen;
-				double dBest = nBest.scalarProduct(cand.mergedSurface.centroid());
-				for(const OpeningMatchCandidate& other : candsIt->second) {
-					if(other.parentSB == cand.parentSB || !other.parentSB || other.area < 0.05)
-						continue;
-					IBKMK::Vector3D nO = newellNormal(other.mergedSurface.polygon());
-					double nOLen = nO.magnitude();
-					if(nOLen < 1e-9)
-						continue;
-					nO *= 1.0/nOLen;
-					double dot = nBest.scalarProduct(nO);
-					if(std::fabs(dot) < 0.99)
-						continue;
-					double dO = nO.scalarProduct(other.mergedSurface.centroid());
-					if(dot < 0) dO = -dO;
-					if(std::fabs(dBest - dO) > 0.05)
-						continue;
-					// piece must not overlap an already accepted piece
-					bool overlaps = false;
-					for(const OpeningMatchCandidate* p : pieces) {
-						Surface inter = p->mergedSurface.intersect(other.mergedSurface);
-						if(inter.isValid(convertOptions.m_distanceEps) && inter.area() > 0.2 * other.area) {
-							overlaps = true;
-							break;
-						}
-					}
-					if(overlaps)
-						continue;
-					pieces.push_back(&other);
-					combinedArea += other.area;
-				}
-			}
-			// cap: combined pieces must stay within the window/door outline
-			if(cand.openingElem) {
-				double elemArea = cand.openingElem->openingArea();
-				while(elemArea > 0.1 && combinedArea > 1.2 * elemArea && pieces.size() > 1) {
-					combinedArea -= pieces.back()->area;
-					pieces.pop_back();
-				}
-			}
+			if(candsIt != candsByOp.end())
+				pieces = collectSplitPieces(cand, candsIt->second, convertOptions);
 		}
+		if(pieces.empty())
+			pieces.push_back(cand);
+		double combinedArea = 0.0;
+		for(const OpeningMatchCandidate& p : pieces)
+			combinedArea += p.area;
 		// Defer low-coverage matches to the building-level cross-space fallback.
 		// Per-space matching only sees SBs whose element hosts the opening (plus
 		// synthetic Missing SBs) — committing a sliver here (e.g. 0.86 m² of a
@@ -1602,13 +1564,14 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 				continue;
 			}
 		}
-		for(const OpeningMatchCandidate* p : pieces) {
-			addOpeningSpaceBoundary(p->mergedSurface, *fitOp, p->parentSB, p->openingElem,
+		for(size_t pci=0; pci<pieces.size(); ++pci) {
+			const OpeningMatchCandidate& p = pieces[pci];
+			addOpeningSpaceBoundary(p.mergedSurface, *fitOp, p.parentSB, p.openingElem,
 									m_longName, openingSpaceBoundaries, *this, convertOptions);
-			if(p != pieces.front()) {
+			if(pci > 0) {
 				Logger::instance() << "space-openings: SPLIT-COMMIT space='" << spaceTag << "'"
 								   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
-								   << " -> sb='" << p->parentSB->m_name << "' area=" << p->area;
+								   << " -> sb='" << p.parentSB->m_name << "' area=" << p.area;
 			}
 		}
 		++committed;
@@ -1642,11 +1605,65 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 	}
 }
 
+std::vector<Space::OpeningMatchCandidate> Space::collectSplitPieces(const OpeningMatchCandidate& best,
+																	const std::vector<OpeningMatchCandidate>& all,
+																	const ConvertOptions& convertOptions) {
+	std::vector<OpeningMatchCandidate> pieces;
+	if(!best.parentSB || best.area <= 0.0)
+		return pieces;
+	pieces.push_back(best);
+	IBKMK::Vector3D nBest = newellNormal(best.mergedSurface.polygon());
+	double nBestLen = nBest.magnitude();
+	if(nBestLen < 1e-9)
+		return pieces;
+	nBest *= 1.0/nBestLen;
+	const double dBest = nBest.scalarProduct(best.mergedSurface.centroid());
+	double combinedArea = best.area;
+	for(const OpeningMatchCandidate& other : all) {
+		if(other.parentSB == best.parentSB || !other.parentSB || other.area < 0.05)
+			continue;
+		IBKMK::Vector3D nO = newellNormal(other.mergedSurface.polygon());
+		double nOLen = nO.magnitude();
+		if(nOLen < 1e-9)
+			continue;
+		nO *= 1.0/nOLen;
+		double dot = nBest.scalarProduct(nO);
+		if(std::fabs(dot) < 0.99)
+			continue;
+		double dO = nO.scalarProduct(other.mergedSurface.centroid());
+		if(dot < 0) dO = -dO;
+		if(std::fabs(dBest - dO) > 0.05)
+			continue;
+		bool overlaps = false;
+		for(const OpeningMatchCandidate& p : pieces) {
+			Surface inter = p.mergedSurface.intersect(other.mergedSurface);
+			if(inter.isValid(convertOptions.m_distanceEps) && inter.area() > 0.2 * other.area) {
+				overlaps = true;
+				break;
+			}
+		}
+		if(overlaps)
+			continue;
+		pieces.push_back(other);
+		combinedArea += other.area;
+	}
+	// cap: combined pieces must stay within the window/door outline
+	if(best.openingElem) {
+		double elemArea = best.openingElem->openingArea();
+		while(elemArea > 0.1 && combinedArea > 1.2 * elemArea && pieces.size() > 1) {
+			combinedArea -= pieces.back().area;
+			pieces.pop_back();
+		}
+	}
+	return pieces;
+}
+
 Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 														 const BuildingElementsCollector& buildingElements,
 														 const ConvertOptions& convertOptions,
 														 bool ignoreContainedOpeningsFilter,
-														 bool allowCoplanarAccept) const {
+														 bool allowCoplanarAccept,
+														 std::vector<OpeningMatchCandidate>* allCandidates) const {
 	OpeningMatchCandidate best;
 
 	// Resolve the window/door element the opening is filled by, if any.
@@ -1727,6 +1744,8 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 			matchDist = elemDist;
 		}
 		Space::OpeningMatchCandidate cand{sb, openingElem, merged, area, matchDist};
+		if(allCandidates != nullptr)
+			allCandidates->push_back(cand);
 		if(isBetterOpeningMatch(cand, best))
 			best = cand;
 	}

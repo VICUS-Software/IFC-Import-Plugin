@@ -227,7 +227,18 @@ public:
 											   const BuildingElementsCollector& buildingElements,
 											   const ConvertOptions& convertOptions,
 											   bool ignoreContainedOpeningsFilter = false,
-											   bool allowCoplanarAccept = false) const;
+											   bool allowCoplanarAccept = false,
+											   std::vector<OpeningMatchCandidate>* allCandidates = nullptr) const;
+
+	/*! From all per-SB candidates of one opening, select the split pieces belonging
+		to the winning candidate: coplanar with it, pairwise non-overlapping, combined
+		area capped at 1.2x the window/door outline. Returns the pieces INCLUDING the
+		winner (front). Openings frequently span several coplanar wall fragments —
+		committing only the best fragment cuts a partial hole (user report: half the
+		arch window lost). */
+	static std::vector<OpeningMatchCandidate> collectSplitPieces(const OpeningMatchCandidate& best,
+																 const std::vector<OpeningMatchCandidate>& all,
+																 const ConvertOptions& convertOptions);
 
 	/*! Commit a previously-computed match by creating a new opening SpaceBoundary,
 		attaching it to the given parent SB, and appending it to this space's SBs.

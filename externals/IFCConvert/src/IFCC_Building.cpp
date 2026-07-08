@@ -205,6 +205,7 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 		std::shared_ptr<Space>			space;
 		Space::OpeningMatchCandidate	cand;
 		bool							fromCoplanar = false;
+		bool							ignoredFilter = false;
 		size_t*							counter = nullptr;
 	};
 	for(Opening& op : openings) {
@@ -231,10 +232,11 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 					auto it = std::find_if(perSpace.begin(), perSpace.end(),
 										   [&space](const SpaceCandidate& sc) -> bool { return sc.space == space; });
 					if(it == perSpace.end())
-						perSpace.push_back(SpaceCandidate{space, c, allowCoplanarAccept, counter});
+						perSpace.push_back(SpaceCandidate{space, c, allowCoplanarAccept, ignoreContainedOpeningsFilter, counter});
 					else if(Space::isBetterOpeningMatch(c, it->cand)) {
 						it->cand = c;
 						it->fromCoplanar = allowCoplanarAccept;
+						it->ignoredFilter = ignoreContainedOpeningsFilter;
 						it->counter = counter;
 					}
 				}
@@ -285,7 +287,24 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 								   << " sb='" << bc.parentSB->m_name << "'";
 			}
 			else {
-				best->space->commitOpeningMatch(op, bc, convertOptions);
+				// The opening frequently spans several coplanar wall fragments of the
+				// winning space — commit ALL split pieces, not just the best fragment
+				// (a partial hole loses the rest of the window, user report).
+				std::vector<Space::OpeningMatchCandidate> allCands;
+				best->space->findBestOpeningMatch(op, buildingElements, convertOptions,
+												  best->ignoredFilter, best->fromCoplanar, &allCands);
+				std::vector<Space::OpeningMatchCandidate> pieces =
+						Space::collectSplitPieces(bc, allCands, convertOptions);
+				if(pieces.empty())
+					pieces.push_back(bc);
+				for(size_t pi=0; pi<pieces.size(); ++pi) {
+					best->space->commitOpeningMatch(op, pieces[pi], convertOptions);
+					if(pi > 0) {
+						Logger::instance() << "Building::updateStoreys: SPLIT cross-commit opening id=" << op.m_id
+										   << " name='" << op.m_name << "' -> sb='" << pieces[pi].parentSB->m_name
+										   << "' area=" << pieces[pi].area;
+					}
+				}
 				if(best->counter)
 					++(*best->counter);
 				primaryCommitted = true;
