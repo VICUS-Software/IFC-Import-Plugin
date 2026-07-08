@@ -855,6 +855,31 @@ static int debugOpeningId() {
 	return id;
 }
 
+/*! True when the opening body is upright (vertical extent dominates the horizontal
+	footprint) — a facade window/door. Such openings must never attach to a
+	near-horizontal surface (glass floors, ceiling fills); flat skylight bodies in
+	roofs/slabs keep matching horizontal planes. */
+static bool openingBodyIsUpright(const Opening& op) {
+	// Use the plain body surfaces, fall back to the CSG element surfaces — the
+	// matcher itself picks between the two lists, so whichever is filled describes
+	// the body extent.
+	const std::vector<Surface>& surfs = !op.surfaces().empty() ? op.surfaces() : op.surfacesCSGElement();
+	IBKMK::Vector3D mn(1e20,1e20,1e20), mx(-1e20,-1e20,-1e20);
+	bool have = false;
+	for(const Surface& s : surfs) {
+		const IBKMK::Vector3D& a = s.aabbMin();
+		const IBKMK::Vector3D& b = s.aabbMax();
+		mn.m_x = std::min(mn.m_x, a.m_x); mn.m_y = std::min(mn.m_y, a.m_y); mn.m_z = std::min(mn.m_z, a.m_z);
+		mx.m_x = std::max(mx.m_x, b.m_x); mx.m_y = std::max(mx.m_y, b.m_y); mx.m_z = std::max(mx.m_z, b.m_z);
+		have = true;
+	}
+	if(!have)
+		return false;
+	const double ez = mx.m_z - mn.m_z;
+	const double eh = std::max(mx.m_x - mn.m_x, mx.m_y - mn.m_y);
+	return ez > 0.8 * eh && ez > 0.5;
+}
+
 static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const std::shared_ptr<SpaceBoundary> spaceBoundary,
 									  const ConvertOptions& convertOptions, double maxDistance,
 									  bool allowCoplanarAccept = false, bool debug = false) {
@@ -1278,6 +1303,26 @@ bool Space::isBetterOpeningMatch(const OpeningMatchCandidate& cand, const Openin
 		return false;
 	if(!best.parentSB || best.area <= 0.0)
 		return true;
+	// Vertical patches beat near-horizontal ones for window/door openings unless
+	// far smaller: WSHH extrudes some opening bodies meters through the storey —
+	// their FOOTPRINT stamped into a glass ceiling (1.5x1.49m at z=15.27) ranks
+	// above the true facade patch by raw area. Skylights are unaffected (their
+	// only candidates are horizontal, so both sides classify equal).
+	{
+		auto horiz = [](const Surface& s) -> bool {
+			IBKMK::Vector3D n = newellNormal(s.polygon());
+			double len = n.magnitude();
+			return len > 1e-9 && std::fabs(n.m_z)/len > 0.75;
+		};
+		const bool candHoriz = horiz(cand.mergedSurface);
+		const bool bestHoriz = horiz(best.mergedSurface);
+		if(candHoriz != bestHoriz) {
+			if(!candHoriz && cand.area > 0.4 * best.area)
+				return true;
+			if(candHoriz && best.area > 0.4 * cand.area)
+				return false;
+		}
+	}
 	double areaCap = 1e20;
 	if(cand.openingElem) {
 		double elemArea = cand.openingElem->openingArea();
