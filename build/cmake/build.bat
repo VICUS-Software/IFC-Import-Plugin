@@ -74,8 +74,13 @@ if ERRORLEVEL 1 GOTO fail
 popd
 
 :: copy executable to bin/release dir
-xcopy /Y .\bb_VC_x64\IFC2BESTest\IFC2BESTest.exe ..\..\bin\release_x64
-xcopy /Y .\bb_VC_x64\ImportIFCPlugin\ImportIFCPlugin.dll ..\..\bin\release_x64
+:: (create the target dir first and use a trailing backslash + /I so xcopy
+::  treats the destination as a directory instead of prompting
+::  "F = file or D = directory?" — that prompt hangs/fails in CI, leaving
+::  release empty and the artifact upload with nothing to upload)
+if not exist ..\..\bin\release mkdir ..\..\bin\release
+xcopy /Y /I .\bb_VC_x64\IFC2BESTest\IFC2BESTest.exe ..\..\bin\release\
+xcopy /Y /I .\bb_VC_x64\ImportIFCPlugin\ImportIFCPlugin.dll ..\..\bin\release\
 
 exit /b 0
 
