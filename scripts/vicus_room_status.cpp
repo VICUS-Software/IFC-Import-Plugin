@@ -29,6 +29,23 @@ int main(int argc, char** argv) {
 			for (const VICUS::BuildingLevel & bl : b.m_buildingLevels) {
 				for (const VICUS::Room & r : bl.m_rooms) {
 					++nTotal;
+					// Diagnose surfaces whose Polygon3D has an empty polyline —
+					// these throw "Polyline does not contain any vertexes!" in the GUI.
+					for (const VICUS::Surface & s : r.surfaces()) {
+						try {
+							const auto & vv = s.geometry().polygon3D().vertexes();
+							if (vv.empty())
+								printf("EMPTY-POLY room='%s' surf id=%u name='%s'\n",
+									   r.m_displayName.toStdString().c_str(), s.m_id,
+									   s.m_displayName.toStdString().c_str());
+						}
+						catch (IBK::Exception &) {
+							printf("THROW-POLY room='%s' surf id=%u name='%s' verts2D=%zu\n",
+								   r.m_displayName.toStdString().c_str(), s.m_id,
+								   s.m_displayName.toStdString().c_str(),
+								   s.geometry().polygon3D().polyline().vertexes().size());
+						}
+					}
 					VICUS::Room::RoomStatus st = r.roomStatus();
 					const char* sts = "valid";
 					if (st == VICUS::Room::RS_Valid) ++nValid;
