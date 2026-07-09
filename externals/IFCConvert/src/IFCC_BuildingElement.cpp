@@ -587,6 +587,20 @@ void BuildingElement::findSurfacePairs(double eps) {
 	if(m_surfaces.size() < 2)
 		return;
 
+	// Guard against pathological high-face-count meshes (detailed manufacturer BIM
+	// content — e.g. a Clopay sectional garage door tessellated to ~30,000 faces).
+	// The O(n²) parallel-pair search below explodes in BOTH time and memory: with many
+	// mutually parallel faces (a garage door is mostly flat axis-aligned panels/slats)
+	// m_parallelSurfaces grows toward N²/2 entries, which ran a real import out of
+	// memory (>20 GB). Such meshes have no clean two-face front/back geometry, so the
+	// thickness-based side classification is meaningless for them anyway — skip it.
+	const size_t kMaxSurfacesForPairing = 5000;
+	if(m_surfaces.size() > kMaxSurfacesForPairing) {
+		Logger::instance() << "findSurfacePairs: SKIP element id=" << m_id << " name='" << m_name
+						   << "' — too many surfaces (" << m_surfaces.size() << " > "
+						   << kMaxSurfacesForPairing << ") for O(n^2) parallel pairing (avoids memory blow-up)";
+		return;
+	}
 
 	double thickness = 0;
 	if(!m_materialLayers.empty()) {
