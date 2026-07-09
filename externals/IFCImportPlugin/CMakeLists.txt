@@ -72,12 +72,23 @@ set(METADATA_JSON_FILE ${PROJECT_SOURCE_DIR}/src/metadata.json)
 qt6_wrap_ui( LIB_UI_SRCS ${LIB_UIS} )
 qt6_wrap_cpp( LIB_MOC_SRCS ${LIB_HDRS} )
 
+# Vicus.lib references VICUS::KeywordListQt::Description() (e.g. from
+# NetworkController::displayName()), but the KeywordListQt translation unit is
+# compiled into the SIM-VICUS application target, not into Vicus.lib. A Windows
+# DLL must resolve every symbol at link time (LNK2019/LNK1120), so the plugin has
+# to compile this translation source itself. On Linux the .so tolerates the
+# undefined symbol (resolved at load time by the host), which is why this only
+# broke the Windows build. Compiling it into Vicus.lib is not an option — the app
+# already links Vicus.lib and compiles KeywordListQt separately (would duplicate).
+set(VICUS_KEYWORDLISTQT_SRC ${PROJECT_SOURCE_DIR}/../Vicus/srcTranslations/VICUS_KeywordListQt.cpp)
+
 # Plugin-Bibliothek
 add_library(ImportIFCPlugin SHARED
     ${SRC_FILES}
     ${LIB_MOC_SRCS}
     ${LIB_UI_SRCS}
 	${METADATA_JSON_FILE}
+	${VICUS_KEYWORDLISTQT_SRC}
 )
 
 # Weitere statische Bibliotheken (analog zu LIBS += ...)
