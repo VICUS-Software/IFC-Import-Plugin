@@ -1,3 +1,4 @@
 [submodule "SIM-VICUS"]
 	path = SIM-VICUS
 	url = ../../VICUS-Software/SIM-VICUS.git
+	branch = feature/Feature-IfcOverhaul
