@@ -2,10 +2,11 @@
 #define IFCC_BuildingElementsCollectorH
 
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <QMutex>
 
 namespace IFCC {
 
@@ -66,7 +67,7 @@ struct BuildingElementsCollector {
 		method invokes this automatically.
 	*/
 	void invalidateLookupCaches() const {
-		std::lock_guard<std::mutex> lock(m_cacheMutex);
+		QMutexLocker lock(&m_cacheMutex);
 		m_byGUID.clear();
 		m_byID.clear();
 		m_cachesBuilt = false;
@@ -80,7 +81,7 @@ private:
 	mutable std::unordered_map<std::string, std::shared_ptr<BuildingElement>>	m_byGUID;
 	mutable std::unordered_map<int, std::shared_ptr<BuildingElement>>			m_byID;
 	mutable bool																m_cachesBuilt = false;
-	mutable std::mutex															m_cacheMutex;
+	mutable QMutex																m_cacheMutex;
 };
 
 } // namespace IFCC

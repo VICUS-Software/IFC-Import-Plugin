@@ -5,9 +5,10 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
-#include <mutex>
 #include <sstream>
 #include <string>
+
+#include <QMutex>
 
 namespace IFCC {
 
@@ -17,8 +18,8 @@ class Logger;
 	parallel regions (per-space matching, shell anchoring) — unsynchronized
 	writes to the shared ofstreams are undefined behaviour and caused sporadic
 	crashes that vanished under gdb. */
-inline std::mutex& logFlushMutex() {
-	static std::mutex m;
+inline QMutex& logFlushMutex() {
+	static QMutex m;
 	return m;
 }
 
@@ -44,7 +45,7 @@ public:
 		if(!m_active)
 			return;
 		std::string line = "[" + m_ts + "] " + m_buf.str();
-		std::lock_guard<std::mutex> lock(logFlushMutex());
+		QMutexLocker lock(&logFlushMutex());
 		if(m_main)
 			*m_main << line << std::endl;
 		if(m_step)

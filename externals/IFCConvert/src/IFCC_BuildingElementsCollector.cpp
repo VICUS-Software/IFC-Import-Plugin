@@ -36,7 +36,7 @@ void BuildingElementsCollector::buildLookupCaches() const {
 
 
 const std::shared_ptr<BuildingElement> BuildingElementsCollector::fromGUID(const std::string& guid) const {
-	std::lock_guard<std::mutex> lock(m_cacheMutex);
+	QMutexLocker lock(&m_cacheMutex);
 	if(!m_cachesBuilt)
 		buildLookupCaches();
 	auto it = m_byGUID.find(guid);
@@ -47,7 +47,7 @@ const std::shared_ptr<BuildingElement> BuildingElementsCollector::fromGUID(const
 
 
 std::shared_ptr<BuildingElement> BuildingElementsCollector::fromID(int id) const {
-	std::lock_guard<std::mutex> lock(m_cacheMutex);
+	QMutexLocker lock(&m_cacheMutex);
 	if(!m_cachesBuilt)
 		buildLookupCaches();
 	auto it = m_byID.find(id);
