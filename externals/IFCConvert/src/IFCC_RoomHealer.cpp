@@ -498,19 +498,102 @@ int repairWinding(std::vector<VICUS::Surface>& surfs) {
 // Pass 3 — close remaining shell holes with the room's closing polygons
 // ---------------------------------------------------------------------------
 
-int closeHoles(VICUS::Room& room, unsigned int& nextId) {
+/*! Overhang trim: if a closing loop is coplanar with and already covered by an
+	existing room surface, the "gap" is really an overhang of that surface past the
+	wall line (skewed IFC space outlines: floor and ceiling footprints differ by a
+	thin wedge). Adding a Missing patch would just stack a duplicate sliver onto the
+	surface — VICUS' direction-aware openness check then flags exactly these edges
+	as open. Instead cut the loop out of the covering surface so its boundary snaps
+	back to the wall line. Returns true if a surface was trimmed. */
+bool tryTrimOverhang(std::vector<VICUS::Surface>& surfs, const polygon3D_t& loop) {
+	const double kPlaneDist = 0.03;
+	const double kMinParallel = 0.999;
+	IBKMK::Vector3D nLoop = newellNormal(loop);
+	const double loopArea = nLoop.magnitude();
+	if(loopArea < 1e-6)
+		return false;
+	nLoop *= 1.0/loopArea;
+	IBKMK::Vector3D cLoop(0,0,0);
+	for(const IBKMK::Vector3D& v : loop) cLoop += v;
+	cLoop *= 1.0/double(loop.size());
+	const double dLoop = nLoop.scalarProduct(cLoop);
+
+	for(VICUS::Surface& s : surfs) {
+		// trimming shifts the local coordinate system - keep faces with children intact
+		if(!s.subSurfaces().empty() || !s.holes().empty())
+			continue;
+		const polygon3D_t& polyS = s.polygon3D().vertexes();
+		if(polyS.size() < 3)
+			continue;
+		IBKMK::Vector3D nS = newellNormal(polyS);
+		const double areaS = nS.magnitude();
+		if(areaS < loopArea + 0.01)
+			continue; // surface must be able to cover the loop and keep a remainder
+		nS *= 1.0/areaS;
+		double dot = nS.scalarProduct(nLoop);
+		if(std::fabs(dot) < kMinParallel)
+			continue;
+		IBKMK::Vector3D cS(0,0,0);
+		for(const IBKMK::Vector3D& v : polyS) cS += v;
+		cS *= 1.0/double(polyS.size());
+		double dS = nS.scalarProduct(cS);
+		double dl = dot > 0 ? dLoop : -dLoop;
+		if(std::fabs(dS - dl) > kPlaneDist)
+			continue;
+
+		PlaneNormal plane(polyS);
+		if(!plane.m_valid)
+			continue;
+		IntersectionResult ir = intersectPolygons2(polyS, loop, plane);
+		double interArea = 0.0;
+		for(const polygon3D_t& p : ir.m_intersections)
+			interArea += polygonArea3D(p);
+		if(interArea < 0.9 * loopArea)
+			continue; // loop is a genuine gap, not an overhang of this surface
+		// subtract the loop; only accept a single clean hole-free remainder
+		if(ir.m_diffBaseMinusClip.size() != 1 || !ir.m_holesBaseMinusClip[0].empty())
+			continue;
+		const polygon3D_t& rest = ir.m_diffBaseMinusClip.front();
+		double restArea = polygonArea3D(rest);
+		if(rest.size() < 3 || restArea < 0.01 || restArea >= areaS)
+			continue;
+		IBKMK::Polygon3D p3(rest);
+		if(!p3.isValid())
+			continue;
+		// keep original winding orientation
+		IBKMK::Vector3D nRest = newellNormal(rest);
+		if(nRest.scalarProduct(nS) < 0) {
+			polygon3D_t rev(rest.rbegin(), rest.rend());
+			p3 = IBKMK::Polygon3D(rev);
+			if(!p3.isValid())
+				continue;
+		}
+		s.setPolygon3D(p3);
+		Logger::instance() << "room-heal: overhang-trim surface '" << s.m_displayName.toStdString()
+						   << "' by " << loopArea << " m2";
+		return true;
+	}
+	return false;
+}
+
+int closeHoles(VICUS::Room& room, unsigned int& nextId, int& overhangsTrimmed) {
 	const std::vector<IBKMK::Polygon3D>& closers = room.closingPolygons();
 	if(closers.empty() || closers.size() > 30)
 		return 0;
 	std::vector<VICUS::Surface> surfs = room.surfaces();
 	const IBKMK::Vector3D center = bboxCenter(surfs);
 	int added = 0;
+	int trimmed = 0;
 	for(const IBKMK::Polygon3D& poly : closers) {
 		if(!poly.isValid())
 			continue;
 		double area = polygonArea3D(poly.vertexes());
 		if(area < 0.01 || area > 500.0)
 			continue;
+		if(tryTrimOverhang(surfs, poly.vertexes())) {
+			++trimmed;
+			continue;
+		}
 		IBKMK::Polygon3D oriented = poly;
 		if(signedVolumeContribution(poly.vertexes(), center) < 0.0) {
 			std::vector<IBKMK::Vector3D> rev(poly.vertexes().rbegin(), poly.vertexes().rend());
@@ -527,8 +610,9 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 		surfs.push_back(s);
 		++added;
 	}
-	if(added > 0)
+	if(added > 0 || trimmed > 0)
 		room.setSurfaces(surfs);
+	overhangsTrimmed += trimmed;
 
 	// Pass 3b: close QUADS spanned by pairs of remaining uncovered edges.
 	// closingPolygons only chains planar loops — the typical leftovers are
@@ -625,6 +709,7 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 			const IBKMK::Vector3D center = bboxCenter(cur);
 			std::vector<bool> used(segs3.size(), false);
 			int loopsAdded = 0;
+			int trimmed3c = 0;
 			for(size_t si=0; si<segs3.size() && loopsAdded < 20; ++si) {
 				if(used[si]) continue;
 				std::vector<IBKMK::Vector3D> chain{segs3[si].m_start, segs3[si].m_end};
@@ -685,6 +770,11 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 				double area = polygonArea3D(loop);
 				if(area < 0.05 || area > 500.0)
 					continue;
+				if(tryTrimOverhang(cur, loop)) {
+					++trimmed3c;
+					++overhangsTrimmed;
+					continue;
+				}
 				if(signedVolumeContribution(loop, center) < 0.0)
 					std::reverse(loop.begin(), loop.end());
 				IBKMK::Polygon3D p3(loop);
@@ -699,7 +789,7 @@ int closeHoles(VICUS::Room& room, unsigned int& nextId) {
 				cur.push_back(s);
 				++loopsAdded;
 			}
-			if(loopsAdded > 0) {
+			if(loopsAdded > 0 || trimmed3c > 0) {
 				room.setSurfaces(cur);
 				added += loopsAdded;
 			}
@@ -759,7 +849,8 @@ RoomHealStats healRooms(VICUS::Project& prj) {
 				CoalesceResult coal = coalesceMissingFills(surfs);
 				int flippedHere = repairWinding(surfs);
 				room.setSurfaces(surfs);
-				int holesHere = closeHoles(room, nextId);
+				int trimmedHere = 0;
+				int holesHere = closeHoles(room, nextId, trimmedHere);
 
 				const int rankAfter = statusRank(room);
 				if(rankAfter > rankBefore) {
@@ -776,6 +867,7 @@ RoomHealStats healRooms(VICUS::Project& prj) {
 				stats.m_surfacesClipped += p1.m_clipped;
 				stats.m_surfacesFlipped += flippedHere;
 				stats.m_holesClosed += holesHere;
+				stats.m_overhangsTrimmed += trimmedHere;
 				stats.m_subsurfacesDropped += subsDroppedHere;
 				stats.m_fillsCoalesced += coal.m_merged;
 				allDroppedIds.insert(p1.m_droppedIds.begin(), p1.m_droppedIds.end());
@@ -783,11 +875,12 @@ RoomHealStats healRooms(VICUS::Project& prj) {
 				allDroppedSubIds.insert(droppedSubIdsHere.begin(), droppedSubIdsHere.end());
 				if(rankAfter == 2) ++stats.m_errAfter;
 				else if(rankAfter == 1) ++stats.m_warnAfter;
-				if(rankAfter != rankBefore || p1.m_dropped || flippedHere || holesHere) {
+				if(rankAfter != rankBefore || p1.m_dropped || flippedHere || holesHere || trimmedHere) {
 					Logger::instance() << "room-heal: room '" << room.m_displayName.toStdString()
 									   << "' rank " << rankBefore << " -> " << rankAfter
 									   << " dropped=" << p1.m_dropped << " clipped=" << p1.m_clipped
-									   << " flipped=" << flippedHere << " holesClosed=" << holesHere;
+									   << " flipped=" << flippedHere << " holesClosed=" << holesHere
+									   << " overhangsTrimmed=" << trimmedHere;
 				}
 			}
 		}
@@ -823,6 +916,7 @@ RoomHealStats healRooms(VICUS::Project& prj) {
 					   << " clipped=" << stats.m_surfacesClipped
 					   << " flipped=" << stats.m_surfacesFlipped
 					   << " holesClosed=" << stats.m_holesClosed
+					   << " overhangsTrimmed=" << stats.m_overhangsTrimmed
 					   << " subsDropped=" << stats.m_subsurfacesDropped
 					   << " fillsCoalesced=" << stats.m_fillsCoalesced
 					   << " reverted=" << stats.m_roomsReverted;
