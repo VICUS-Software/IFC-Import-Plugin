@@ -609,20 +609,30 @@ void BuildingElement::findSurfacePairs(double eps) {
 		}
 	}
 
+	// Only the minimum distance and the largest-area pair are needed later on, so both are
+	// tracked on the fly instead of storing all parallel pairs (O(n²) memory — ~130 MB per
+	// element for a urinal mesh with ~4900 faces, several GB for a whole building).
+	m_minParallelDistance = -1;
+	m_possibleSideSurfaces.clear();
+	std::vector<double> areas(m_surfaces.size());
+	for(size_t i=0; i<m_surfaces.size(); ++i)
+		areas[i] = m_surfaces[i].area();
+
+	double bestArea = -1.0;
+	int bestI = -1, bestJ = -1;
 	for(int i=0; i<m_surfaces.size()-1; ++i) {
-		bool found = false;
 		bool foundSide = false;
 		for(int j=i+1; j<m_surfaces.size(); ++j) {
 			if(m_surfaces[i].isParallelTo(m_surfaces[j], eps)) {
-				if(!found) {
-					ParallelSurfaces item;
-					item.m_indexOrg = i;
-					m_parallelSurfaces.push_back(item);
-					found = true;
-				}
-				m_parallelSurfaces.back().m_indicesParallel.push_back(j);
 				double dist = m_surfaces[i].distanceToParallelPlane(m_surfaces[j], eps);
-				m_parallelSurfaces.back().m_distances.push_back(dist);
+				if(m_minParallelDistance < 0 || dist < m_minParallelDistance)
+					m_minParallelDistance = dist;
+				double combined = areas[i] + areas[j];
+				if(combined > bestArea) {
+					bestArea = combined;
+					bestI = i;
+					bestJ = j;
+				}
 				if(thickness > 0 && IBK::nearly_equal<4>(dist,thickness)) {
 					if(!foundSide) {
 						m_possibleSideSurfaces.push_back(i);
@@ -641,20 +651,6 @@ void BuildingElement::findSurfacePairs(double eps) {
 	// and subsurface matching falls back to thin reveal/edge faces — windows end up
 	// placed on wall end-cap surfaces as narrow strips.
 	if(m_possibleSideSurfaces.empty()) {
-		double bestArea = -1.0;
-		int bestI = -1, bestJ = -1;
-		for(const ParallelSurfaces& ps : m_parallelSurfaces) {
-			int i = ps.m_indexOrg;
-			double areaI = m_surfaces[i].area();
-			for(int j : ps.m_indicesParallel) {
-				double combined = areaI + m_surfaces[j].area();
-				if(combined > bestArea) {
-					bestArea = combined;
-					bestI = i;
-					bestJ = j;
-				}
-			}
-		}
 		if(bestI >= 0 && bestJ >= 0) {
 			m_possibleSideSurfaces.push_back(bestI);
 			m_possibleSideSurfaces.push_back(bestJ);
@@ -719,17 +715,10 @@ const std::vector<Surface>& BuildingElement::surfaces() const {
 
 double	BuildingElement::thickness() const {
 	if(m_materialLayers.empty()) {
-		if(m_parallelSurfaces.empty())
+		if(m_minParallelDistance < 0 || m_minParallelDistance > 10000)
 			return 0;
 
-		double minDist = 10001;
-		for(const auto& item : m_parallelSurfaces) {
-			minDist = std::min(minDist, item.minDistance());
-		}
-		if(minDist > 10000)
-			return 0;
-
-		return minDist;
+		return m_minParallelDistance;
 	}
 
 	double res = 0;

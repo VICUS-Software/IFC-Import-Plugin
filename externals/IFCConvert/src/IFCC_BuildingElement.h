@@ -135,17 +135,6 @@ public:
 		IFC4X3::IfcWallTypeEnum::IfcWallTypeEnumEnum	m_wallType = IFC4X3::IfcWallTypeEnum::ENUM_USERDEFINED;
 	};
 
-	struct ParallelSurfaces {
-		int					m_indexOrg;	// Index of the original surface
-		std::vector<int>	m_indicesParallel;	// Indices of all parallel surfaces
-		std::vector<double>	m_distances;    // Distances of all parallel surfaces to the original one
-		double minDistance() const {
-			if(m_distances.empty())
-				return 1e30;
-			return *std::min_element(m_distances.begin(), m_distances.end());
-		}
-	};
-
 	/*! Standard constructor.
 		\param id Unique id for using in project.
 	*/
@@ -300,10 +289,13 @@ public:
 	OpeningProperties													m_openingProperties;
 	/*! Contains additional properties only for walls.*/
 	WallProperties														m_wallProperties;
-	/*! Vector of surface pairs (given by index) which are parallel.
-		This vector is used in order to evaluate element thickness.
+	/*! Smallest distance between two parallel surfaces of this element in [m].
+		Used in order to evaluate element thickness if no material layers are given.
+		Negative if no parallel surface pair exists.
+		Only the minimum is stored — keeping all parallel pairs needs O(n²) memory and ran
+		imports with finely tessellated elements (~5000 faces each) out of memory.
 	*/
-	std::vector<ParallelSurfaces>										m_parallelSurfaces;
+	double																m_minParallelDistance = -1;
 	/*! Contains the indices of surfaces which are possible sides for this building element.*/
 	std::vector<int>													m_possibleSideSurfaces;
 
