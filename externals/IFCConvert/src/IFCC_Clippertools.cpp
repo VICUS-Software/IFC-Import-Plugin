@@ -6,6 +6,7 @@
 
 #include <IBK_assert.h>
 
+#include <algorithm>
 #include <limits>
 
 #include <Carve/src/include/carve/carve.hpp>
@@ -492,6 +493,89 @@ IntersectionResult intersectPolygons2(const polygon3D_t& base, const polygon3D_t
 		return IntersectionResult();
 	}
 
+}
+
+/*! Axis-aligned bounding box of a clipper path (top = min y, bottom = max y).*/
+static ClipperLib::IntRect pathBounds(const ClipperLib::Path& path) {
+	ClipperLib::IntRect r{path.front().X, path.front().Y, path.front().X, path.front().Y};
+	for(const ClipperLib::IntPoint& p : path) {
+		r.left = std::min(r.left, p.X);
+		r.right = std::max(r.right, p.X);
+		r.top = std::min(r.top, p.Y);
+		r.bottom = std::max(r.bottom, p.Y);
+	}
+	return r;
+}
+
+/*! Recursive part of splitPolygonWithHoles. \a region contains outer contours and holes (even-odd).
+	Every outer node of the resulting tree which still has holes is cut vertically through the
+	center of its first hole — this turns that hole into two notches.
+*/
+static void splitRegionAtHoles(const ClipperLib::Paths& region, int depth, ClipperLib::Paths& result) {
+	ClipperLib::Clipper clipper;
+	clipper.AddPaths(region, ClipperLib::ptSubject, true);
+	ClipperLib::PolyTree tree;
+	clipper.Execute(ClipperLib::ctUnion, tree, ClipperLib::pftEvenOdd, ClipperLib::pftEvenOdd);
+
+	for(ClipperLib::PolyNode* node = tree.GetFirst(); node != nullptr; node = node->GetNext()) {
+		if(node->IsHole() || node->Contour.size() < 3)
+			continue;
+
+		ClipperLib::Paths holes;
+		for(const ClipperLib::PolyNode* child : node->Childs) {
+			if(child->IsHole() && child->Contour.size() >= 3)
+				holes.push_back(child->Contour);
+		}
+		// Depth limit only guards against pathological input - each cut removes at least one hole.
+		if(holes.empty() || depth > 64) {
+			result.push_back(node->Contour);
+			continue;
+		}
+
+		const ClipperLib::IntRect outerBounds = pathBounds(node->Contour);
+		const ClipperLib::IntRect holeBounds = pathBounds(holes.front());
+		const ClipperLib::cInt cutX = (holeBounds.left + holeBounds.right) / 2;
+		const ClipperLib::cInt bottom = outerBounds.top - 1;
+		const ClipperLib::cInt top = outerBounds.bottom + 1;
+		const ClipperLib::Path halves[2] = {
+			{ {outerBounds.left - 1, bottom}, {cutX, bottom}, {cutX, top}, {outerBounds.left - 1, top} },
+			{ {cutX, bottom}, {outerBounds.right + 1, bottom}, {outerBounds.right + 1, top}, {cutX, top} }
+		};
+
+		ClipperLib::Paths nodeRegion = holes;
+		nodeRegion.insert(nodeRegion.begin(), node->Contour);
+		for(const ClipperLib::Path& half : halves) {
+			ClipperLib::Clipper cutter;
+			cutter.AddPaths(nodeRegion, ClipperLib::ptSubject, true);
+			cutter.AddPath(half, ClipperLib::ptClip, true);
+			ClipperLib::Paths piece;
+			cutter.Execute(ClipperLib::ctIntersection, piece, ClipperLib::pftEvenOdd, ClipperLib::pftNonZero);
+			if(!piece.empty())
+				splitRegionAtHoles(piece, depth + 1, result);
+		}
+	}
+}
+
+std::vector<polygon3D_t> splitPolygonWithHoles(const polygon3D_t& outer, const std::vector<polygon3D_t>& holes,
+											   const PlaneNormal& plane) {
+	ClipperLib::Paths region;
+	region.push_back(createPathFrom3D(outer, plane));
+	if(region.front().size() < 3)
+		return std::vector<polygon3D_t>();
+	for(const polygon3D_t& hole : holes) {
+		ClipperLib::Path path = createPathFrom3D(hole, plane);
+		if(path.size() >= 3)
+			region.push_back(path);
+	}
+
+	try {
+		ClipperLib::Paths result;
+		splitRegionAtHoles(region, 0, result);
+		return polygons3DFromPaths(result, plane);
+	}
+	catch (...) {
+		return std::vector<polygon3D_t>();
+	}
 }
 
 std::vector<polygon3D_t> simplifyPolygon(const polygon3D_t &base) {

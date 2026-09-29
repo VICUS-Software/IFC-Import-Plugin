@@ -5,6 +5,7 @@
 #include <ifcpp/IFC4X3/include/IfcElementCompositionEnum.h>
 
 #include <numeric>
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -146,18 +147,39 @@ static bool divideSurface(const Surface::IntersectionResult& intRes, std::vector
 	// we have only one resulting space surface - change original surface to it
 	std::vector<Surface> diffSurfaces;
 	for(size_t i=0; i<intRes.m_diffBaseMinusClip.size(); ++i) {
-		Surface surf = intRes.m_diffBaseMinusClip[i];
-		std::vector<Surface> tmp = surf.getSimplified();
+		const Surface& surf = intRes.m_diffBaseMinusClip[i];
+		const std::vector<Surface>& holes = intRes.m_holesBaseMinusClip[i];
+		std::vector<Surface> tmp;
+
+		// A construction surface lying completely inside the space surface leaves a hole in the rest.
+		// Dropping the hole would return the unchanged space surface, and the matcher would pick the
+		// same construction surface again until its iteration cap (GCR: 3887 m² floor, >1 h, thousands
+		// of duplicate space boundaries). Therefore split the rest into hole-free pieces.
+		if(!holes.empty()) {
+			std::vector<polygon3D_t> holePolygons;
+			for(const Surface& hole : holes)
+				holePolygons.push_back(hole.polygon());
+			PlaneNormal plane(surf.polygon());
+			std::vector<polygon3D_t> pieces;
+			if(plane.m_valid)
+				pieces = splitPolygonWithHoles(surf.polygon(), holePolygons, plane);
+			for(const polygon3D_t& piece : pieces) {
+				if(piece.size() < 3)
+					continue;
+				std::vector<Surface> simplified = Surface(piece).getSimplified();
+				tmp.insert(tmp.end(), simplified.begin(), simplified.end());
+			}
+			// fallback - keep the rest without holes and report the holes
+			if(tmp.empty())
+				subsurfaces.insert(subsurfaces.end(), holes.begin(), holes.end());
+		}
+		if(tmp.empty())
+			tmp = surf.getSimplified();
 
 		// should never happen
 		if(tmp.empty())
 			return false;
 
-		// we have some holes - add these to subsurface list
-		if(!intRes.m_holesBaseMinusClip[i].empty()) {
-			for(const Surface& subsurf : intRes.m_holesBaseMinusClip[i])
-				subsurfaces.push_back(subsurf);
-		}
 		for(const auto& s : tmp) {
 			diffSurfaces.push_back(s);
 		}
@@ -453,11 +475,18 @@ static double matchScore(const ConstructionSurfaceInfo& c, double maxArea, doubl
 // plane parallelism, optional opposite-normal + side-of-space check, plane distance,
 // full Boolean intersection (intersect2). The IntersectionResult is cached inside the
 // returned ConstructionSurfaceInfo so the caller can skip the expensive second call.
+struct MatchStats {
+	size_t	m_intersectCalls = 0;
+	size_t	m_maxCheap = 0;
+	size_t	m_maxVerts = 0;
+};
+
 static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurface,
 													   const IBKMK::Vector3D& spaceCentroid,
 													   const std::array<std::vector<IndexedConstrSurface>, 4>& buckets,
 													   const std::vector<std::shared_ptr<BuildingElement>>& constructionElements,
-													   const ConvertOptions& convertOptions) {
+													   const ConvertOptions& convertOptions,
+													   MatchStats& stats) {
 	const double EPS = convertOptions.m_distanceEps;
 	IBKMK::Vector3D ssNormal = spaceSurface.planeNormalVec();
 	int ssBucket = classifyOrientation(ssNormal);
@@ -520,7 +549,10 @@ static ConstructionSurfaceInfo findBestMatchUsingIndex(const Surface& spaceSurfa
 	// Pass 2 — expensive intersect2: short-circuit on first candidate that fully
 	// covers the space surface. Saves O(N) intersect2 calls on dense bucket sets.
 	const double spaceArea = spaceSurface.area();
+	stats.m_maxCheap = std::max(stats.m_maxCheap, cheap.size());
+	stats.m_maxVerts = std::max(stats.m_maxVerts, spaceSurface.polygon().size());
 	for(const CheapCandidate& cc : cheap) {
+		++stats.m_intersectCalls;
 		Surface::IntersectionResult result = spaceSurface.intersect2(*cc.cs);
 		if(!result.isValid())
 			continue;
@@ -721,6 +753,8 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 		std::vector<int> matchCount(surfaces.size(), 0);
 
 		int iters = 0;
+		MatchStats stats;
+		auto tStart = std::chrono::steady_clock::now();
 		while(!workQueue.empty() && iters < TOTAL_MAX_ITER) {
 			// Honor user cancellation — bail out leaving remaining surfaces to be marked "Missing".
 			if(Cancellation::isCancelled())
@@ -728,6 +762,12 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			++iters;
 			size_t ssi = workQueue.front();
 			workQueue.pop_front();
+			if(iters % 500 == 0)
+				Logger::instance() << "SB2 progress space '" << m_name << "' iters=" << iters << " queue=" << workQueue.size()
+								   << " surfaces=" << surfaces.size() << " sbs=" << spaceBoundaries.size()
+								   << " intersect2=" << stats.m_intersectCalls << " ssi=" << ssi
+								   << " area=" << surfaces[ssi].area() << " verts=" << surfaces[ssi].polygon().size()
+								   << " matchCount=" << matchCount[ssi];
 
 			// Skip entries that were consumed (polygon cleared) or are too small.
 			if(surfaces[ssi].polygon().empty() || surfaces[ssi].area() < convertOptions.m_minimumSurfaceArea)
@@ -737,7 +777,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				continue;
 
 			ConstructionSurfaceInfo best = findBestMatchUsingIndex(
-				surfaces[ssi], spaceCentroid, buckets, constructionElements, convertOptions);
+				surfaces[ssi], spaceCentroid, buckets, constructionElements, convertOptions, stats);
 			if(!best.isValid())
 				continue;
 
@@ -801,8 +841,21 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			size_t nSurfacesBefore = surfaces.size();
 			bool fullyConsumed = divideSurface(intersectionResult, surfaces, (int)ssi, holeSubsurfaces);
 
+			// Guard against endless re-matching: if the rest surfaces did not get smaller, the same
+			// construction surface would be found again for the requeued rest.
+			double restArea = 0;
+			if(!fullyConsumed) {
+				restArea = surfaces[ssi].area();
+				for(size_t newIdx = nSurfacesBefore; newIdx < surfaces.size(); ++newIdx)
+					restArea += surfaces[newIdx].area();
+			}
 			if(fullyConsumed) {
 				surfaces[ssi].setNewPolygon({});
+			}
+			else if(restArea > spaceArea - convertOptions.m_minimumSurfaceArea) {
+				Logger::instance() << "SB2 no progress space '" << m_name << "' id=" << m_id << " surface=" << ssi
+								   << " area=" << spaceArea << " rest=" << restArea << " - not requeued";
+				errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching made no progress on a space surface"});
 			}
 			else {
 				// divideSurface replaced surfaces[ssi] with the first residual and appended the rest.
@@ -825,6 +878,10 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				errors.push_back(ConvertError{OT_Space, m_id, "rest surface from intersection from space surface and building element surface has holes"});
 		}
 
+		Logger::instance() << "SB2 end space '" << m_name << "' id=" << m_id << " iters=" << iters
+						   << " surfaces=" << surfaces.size() << " intersect2=" << stats.m_intersectCalls
+						   << " maxCheap=" << stats.m_maxCheap << " maxVerts=" << stats.m_maxVerts << " ms="
+						   << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
 		if(iters >= TOTAL_MAX_ITER)
 			errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching hit iteration cap — some surfaces may be marked missing"});
 	}

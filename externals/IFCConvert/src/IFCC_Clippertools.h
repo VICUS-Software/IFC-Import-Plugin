@@ -125,6 +125,17 @@ std::vector<polygon3D_t> intersectBoundingRect(const polygon3D_t& intersectPoly,
 */
 IntersectionResult intersectPolygons2(const polygon3D_t& base, const polygon3D_t& intersectPoly, const PlaneNormal& plane);
 
+/*! Split a polygon with holes into hole-free polygons which together cover the same area.
+	Each hole is cut through its center by a straight line, so it becomes a notch in the resulting pieces.
+	Used where downstream code can only handle simple polygons without holes.
+	\param outer Outer polygon.
+	\param holes Holes inside the outer polygon.
+	\param plane Plane in 3D in normal form for internal 3D to 2D and back conversion.
+	\return Hole-free polygons. Empty in case of errors.
+*/
+std::vector<polygon3D_t> splitPolygonWithHoles(const polygon3D_t& outer, const std::vector<polygon3D_t>& holes,
+											   const PlaneNormal& plane);
+
 /*! Try to simplify the given polygon. It return a vector of resulting polygons.
  *  The resulting vector is empty in case of errors like non valid base polygon.
 */
