@@ -10,6 +10,8 @@
 
 #include <algorithm>
 
+#include <QCoreApplication>
+
 #include "IFCC_MeshUtils.h"
 #include "IFCC_Helper.h"
 #include "IFCC_Surface.h"
@@ -195,7 +197,7 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 			}
 			if(notify && totalSpaces > 0) {
 				size_t chunkCompleted = completed + (size_t)chunkEnd * phase1Budget / nSpaces;
-				notify->notify(double(chunkCompleted) / double(totalSpaces), "Matching constructions");
+				notify->notify(double(chunkCompleted) / double(totalSpaces), QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Matching constructions"));
 			}
 		}
 		completed += phase1Budget;
@@ -212,7 +214,7 @@ void BuildingStorey::updateSpaces(const objectShapeTypeVector_t& shapes,
 				perSpaceSBs[j], buildingElements, openings, errors, convertOptions);
 			++completed;
 			if(notify && totalSpaces > 0)
-				notify->notify(double(completed) / double(totalSpaces), "Finalizing space boundaries");
+				notify->notify(double(completed) / double(totalSpaces), QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Finalizing space boundaries"));
 		}
 	}
 }

@@ -171,5 +171,5 @@ unix|mac {
 	VERSION = $${VER_MAJ}.$${VER_MIN}.$${VER_PAT}
 }
 
-TRANSLATIONS += ../../resources/translations/IFCConvert_de.ts
+TRANSLATIONS += resources/translations/IFCConvert_de.ts
 CODECFORSRC = UTF-8

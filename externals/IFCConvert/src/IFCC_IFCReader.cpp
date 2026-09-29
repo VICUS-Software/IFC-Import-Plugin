@@ -184,7 +184,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 	Logger::instance() << "file: " << filename.str();
 
 	if(notify)
-		notify->notify(0.01, "Read IFC file");
+		notify->notify(0.01, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Read IFC file"));
 
 	m_filename = filename;
 	m_readCompletedSuccessfully = true;
@@ -204,7 +204,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 		}
 
 		if(notify)
-			notify->notify(1.0, "Read complete");
+			notify->notify(1.0, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Read complete"));
 		Logger::instance() << "read complete; hasError=" << (m_hasError ? 1 : 0);
 		return !m_hasError;
 	}
@@ -218,7 +218,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 		}
 
 		if(notify)
-			notify->notify(1.0, "Read failed");
+			notify->notify(1.0, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Read failed"));
 		return false;
 	}
 	return true;
@@ -786,7 +786,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 	}
 
 	if(notify)
-		notify->notify(0.0, "Start converting");
+		notify->notify(0.0, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Start converting"));
 
 	Logger::instance().beginStep("convert-start");
 	Logger::instance() << "start convert; useSpaceBoundaries=" << (useSpaceBoundaries ? 1 : 0);
@@ -819,7 +819,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 	try {
 
 		if(notify)
-			notify->notify(0.05, "Convert geometry");
+			notify->notify(0.05, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Convert geometry"));
 		Logger::instance().beginStep("convert-geometry");
 		// convert IFC geometric representations into Carve geometry
 		const double length_in_meter = m_geometryConverter.getBuildingModel()->getUnitConverter()->getLengthInMeterFactor();
@@ -850,7 +850,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		Logger::instance() << "convertGeometry done; convertErrors=" << m_convertErrors.size();
 
 		if(notify)
-			notify->notify(0.20, "Split shape data");
+			notify->notify(0.20, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Split shape data"));
 
 		Logger::instance().beginStep("split-shape-data");
 		splitShapeData();
@@ -861,7 +861,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 						   << " openings=" << m_openingsShape.size();
 
 		if(notify)
-			notify->notify(0.25, "Create openings");
+			notify->notify(0.25, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Create openings"));
 
 		Logger::instance().beginStep("create-openings");
 		m_openings.clear();
@@ -889,7 +889,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 
 		try {
 			if(notify)
-				notify->notify(0.35, "Update building elements");
+				notify->notify(0.35, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Update building elements"));
 			Logger::instance().beginStep("update-building-elements");
 			ProgressHandler buildElemProgress = makeSubRange(notify, 0.35, 0.55);
 			updateBuildingElements(&buildElemProgress);
@@ -920,7 +920,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		}
 
 		if(notify)
-			notify->notify(0.55, "Set containing elements");
+			notify->notify(0.55, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Set containing elements"));
 		Logger::instance().beginStep("set-containing-elements");
 		{
 			ProgressHandler containProgress = makeSubRange(notify, 0.55, 0.60);
@@ -949,7 +949,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		buildIFCModel();
 
 		if(notify)
-			notify->notify(0.60, "Match openings");
+			notify->notify(0.60, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Match openings"));
 		Logger::instance().beginStep("match-openings");
 		{
 			ProgressHandler matchProgress = makeSubRange(notify, 0.60, 0.70);
@@ -958,7 +958,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		Logger::instance() << "match-openings done";
 
 		if(notify)
-			notify->notify(0.70, "Collect data");
+			notify->notify(0.70, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Collect data"));
 		Logger::instance().beginStep("collect-data");
 		m_database.collectData(m_buildingElements);
 		Logger::instance() << "collectData done; materials=" << m_database.m_materials.size()
@@ -967,7 +967,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 						   << " windowGlazings=" << m_database.m_windowGlazings.size();
 
 		if(notify)
-			notify->notify(0.72, "Update storeys");
+			notify->notify(0.72, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Update storeys"));
 		Logger::instance().beginStep("update-storeys");
 
 		bool siteExist = m_siteShape != nullptr;
@@ -1030,14 +1030,14 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		}
 
 		if(notify)
-			notify->notify(0.97, "Collect component instances");
+			notify->notify(0.97, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Collect component instances"));
 		Logger::instance().beginStep("collect-component-instances");
 		m_instances.collectComponentInstances(m_buildingElements, m_database, m_site, m_convertErrors, m_convertOptions);
 
 		Logger::instance() << "collectComponentInstances done";
 
 		if(notify)
-			notify->notify(0.98, "Unify components");
+			notify->notify(0.98, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Unify components"));
 		Logger::instance().beginStep("unify-components");
 		m_database.unifyComponents(m_instances);
 
@@ -1049,7 +1049,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		m_convertCompletedSuccessfully = true;
 
 		if(notify)
-			notify->notify(1.0, "Convert completed successfully");
+			notify->notify(1.0, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Convert completed successfully"));
 		Logger::instance().beginStep("convert-done");
 		Logger::instance() << "convert completed successfully; errors=" << m_convertErrors.size()
 						   << " hasError=" << (m_hasError ? 1 : 0);

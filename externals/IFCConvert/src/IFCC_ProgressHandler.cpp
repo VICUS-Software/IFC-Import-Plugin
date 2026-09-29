@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <QCoreApplication>
+
 namespace IFCC {
 
 ProgressHandler::ProgressHandler(std::function<void(int, QString)> callback, double rangeStart, double rangeEnd) :
@@ -32,7 +34,8 @@ void ProgressHandler::notify(double percentage, const char* text) {
 		return;
 
 	m_lastReported = globalPct;
-	QString qtext = hasText ? QString::fromUtf8(text) : QString();
+	// Status texts are marked with QT_TRANSLATE_NOOP("IFCC::ProgressHandler", ...) at the call sites.
+	QString qtext = hasText ? QCoreApplication::translate("IFCC::ProgressHandler", text) : QString();
 	if (m_callback)
 		m_callback(globalPct, qtext);
 }
