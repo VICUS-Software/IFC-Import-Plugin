@@ -2,6 +2,9 @@
 
 #include <omp.h>
 
+#include <functional>
+#include <regex>
+
 #include "IFCC_Helper.h"
 
 #include <QDebug>
@@ -42,6 +45,12 @@
 #include <ifcpp/IFC4X3/include/IfcExternalSpatialElement.h>
 #include <ifcpp/IFC4X3/include/IfcSpatialZone.h>
 #include <ifcpp/IFC4X3/include/IfcBuildingElementPart.h>
+#include <ifcpp/IFC4X3/include/IfcSpace.h>
+#include <ifcpp/IFC4X3/include/IfcProductRepresentation.h>
+#include <ifcpp/IFC4X3/include/IfcRepresentation.h>
+#include <ifcpp/IFC4X3/include/IfcExtrudedAreaSolid.h>
+#include <ifcpp/IFC4X3/include/IfcBooleanResult.h>
+#include <ifcpp/IFC4X3/include/IfcArbitraryProfileDefWithVoids.h>
 
 #include <Carve/src/include/carve/carve.hpp>
 
@@ -182,6 +191,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 
 	Logger::instance().beginStep("read-ifc-file");
 	Logger::instance() << "file: " << filename.str();
+	Logger::instance().summary("Model", "file: " + filename.str());
 
 	if(notify)
 		notify->notify(0.01, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Read IFC file"));
@@ -200,7 +210,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 		m_currentSubProgress = nullptr;
 		if(!ignoreReadError && !res) {
 			m_readCompletedSuccessfully = false;
-			Logger::instance() << "loadModelFromSTEPFile returned false; errorText=" << m_errorText;
+			Logger::instance().error() << "loadModelFromSTEPFile returned false; errorText=" << m_errorText;
 		}
 
 		if(notify)
@@ -211,7 +221,7 @@ bool IFCReader::read(const IBK::Path& filename, bool ignoreReadError, IBK::Notif
 	catch (std::exception& e) {
 		m_currentSubProgress = nullptr;
 		m_errorText = e.what();
-		Logger::instance() << "read exception: " << e.what();
+		Logger::instance().error() << "read exception: " << e.what();
 		if(!ignoreReadError) {
 			m_readCompletedSuccessfully = false;
 			m_hasError = true;
@@ -404,7 +414,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
 				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailConstr;
-					Logger::instance() << "set() FAILED constr type=" << (int)elems.first
+					Logger::instance().count("elements not converted (construction): set() failed");
+					Logger::instance().debug() << "set() FAILED constr type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
 				}
@@ -416,7 +427,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
 				if(currbElem.surfaces().empty()) {
 					++noSurfConstr;
-					Logger::instance() << "no surfaces constr type=" << (int)elems.first
+					Logger::instance().count("elements without geometry (construction)");
+					Logger::instance().debug() << "no surfaces constr type=" << (int)elems.first
 									   << " id=" << currbElem.m_id
 									   << " ifcTag=#" << e->m_tag
 									   << " name='" << currbElem.m_name << "'";
@@ -427,7 +439,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
 				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailSimilar;
-					Logger::instance() << "set() FAILED similar type=" << (int)elems.first
+					Logger::instance().count("elements not converted (construction-similar): set() failed");
+					Logger::instance().debug() << "set() FAILED similar type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
 				}
@@ -438,7 +451,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
 				if(currbElem.surfaces().empty()) {
 					++noSurfSimilar;
-					Logger::instance() << "no surfaces similar type=" << (int)elems.first
+					Logger::instance().count("elements without geometry (construction-similar)");
+					Logger::instance().debug() << "no surfaces similar type=" << (int)elems.first
 									   << " id=" << currbElem.m_id
 									   << " ifcTag=#" << e->m_tag
 									   << " name='" << currbElem.m_name << "'";
@@ -449,7 +463,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				std::shared_ptr<BuildingElement> bElem(new BuildingElement(GUID_maker::instance().guid()));
 				if(!bElem->set(e, elems.first, lengthFactor)) {
 					++setFailOpening;
-					Logger::instance() << "set() FAILED opening type=" << (int)elems.first
+					Logger::instance().count("elements not converted (opening): set() failed");
+					Logger::instance().debug() << "set() FAILED opening type=" << (int)elems.first
 									   << " ifcTag=#" << e->m_tag << " guid=" << elem->m_entity_guid;
 					continue;
 				}
@@ -460,7 +475,8 @@ void IFCReader::updateBuildingElements(IBK::NotificationHandler* notify) {
 				currbElem.update(elem, m_openings, m_convertErrors, m_convertOptions);
 				if(currbElem.surfaces().empty()) {
 					++noSurfOpening;
-					Logger::instance() << "no surfaces opening type=" << (int)elems.first
+					Logger::instance().count("elements without geometry (opening)");
+					Logger::instance().debug() << "no surfaces opening type=" << (int)elems.first
 									   << " id=" << currbElem.m_id
 									   << " ifcTag=#" << e->m_tag
 									   << " name='" << currbElem.m_name << "'";
@@ -593,7 +609,7 @@ void IFCReader::buildIFCModel() {
 
 
 void IFCReader::updateIFCModelTopology() {
-	// --- spatial topology: Site -> Building -> Storey -> Element ---
+	// --- spatial topology: Project -> Site -> Building -> Storey -> Space/Element ---
 	// Called AFTER updateStoreys (m_site is populated only then; buildIFCModel itself must
 	// run earlier, while the element meshes are still unmodified). Emits one geometry-less
 	// IFCObject per spatial structure element so the navigation tree can show the IFC
@@ -644,17 +660,27 @@ void IFCReader::updateIFCModelTopology() {
 			spatialIdByGuid[guid] = obj.m_id;
 		return obj.m_id;
 	};
+	// IFC class names as type, like in other IFC viewers. Spaces are emitted geometry-less:
+	// they are the containers of e.g. IfcCovering elements, which otherwise end up as
+	// thousands of parentless top-level objects.
+	const uint64_t projectObjId = addSpatialObject(GUID_maker::instance().guid(), m_project.m_guid,
+												   m_project.m_name, "IfcProject", VicIFC::INVALID_ID_64);
 	const uint64_t siteObjId = addSpatialObject(m_site.m_id, m_site.m_guid, m_site.m_name,
-												"site", VicIFC::INVALID_ID_64);
+												"IfcSite", projectObjId);
 	for(const std::shared_ptr<Building>& building : m_site.m_buildings) {
 		if(building == nullptr)
 			continue;
 		const uint64_t buildingObjId = addSpatialObject(building->m_id, building->m_guid,
-														building->m_name, "building", siteObjId);
+														building->m_name, "IfcBuilding", siteObjId);
 		for(const std::shared_ptr<BuildingStorey>& storey : building->storeys()) {
 			if(storey == nullptr)
 				continue;
-			addSpatialObject(storey->m_id, storey->m_guid, storey->m_name, "storey", buildingObjId);
+			const uint64_t storeyObjId = addSpatialObject(storey->m_id, storey->m_guid, storey->m_name,
+														  "IfcBuildingStorey", buildingObjId);
+			for(const std::shared_ptr<Space>& space : storey->spaces()) {
+				if(space != nullptr)
+					addSpatialObject(space->m_id, space->m_guid, space->m_name, "IfcSpace", storeyObjId);
+			}
 		}
 	}
 
@@ -707,8 +733,205 @@ void IFCReader::updateIFCModelTopology() {
 			++assigned;
 		}
 	}
+	// diagnostics: objects without parent (shown top-level) and id collisions (break the tree)
+	int topLevel = 0;
+	std::set<uint64_t> ids;
+	int duplicateIds = 0;
+	for(const VicIFC::IFCObject& obj : m_ifcModel.m_objects) {
+		if(obj.m_parentId == VicIFC::INVALID_ID_64 && obj.m_id != projectObjId) {
+			++topLevel;
+			Logger::instance().count("IFC model objects without parent");
+			Logger::instance().debug() << "updateIFCModelTopology: no parent for " << obj.m_ifcType << " '" << obj.m_name
+							   << "' guid=" << obj.m_guid;
+		}
+		if(!ids.insert(obj.m_id).second)
+			++duplicateIds;
+	}
 	Logger::instance() << "updateIFCModelTopology done; objects=" << m_ifcModel.m_objects.size()
-					   << " parentsAssigned=" << assigned;
+					   << " parentsAssigned=" << assigned << " withoutParent=" << topLevel
+					   << " duplicateIds=" << duplicateIds;
+}
+
+void IFCReader::fillColumnVoidsInSpaces() {
+	if(m_convertOptions.hasElementsForSpaceBoundaries(BET_Column) || std::getenv("IFCC_KEEP_SPACE_VOIDS"))
+		return;
+
+	// Column cut-outs are small (GCR: round columns 0.13 m2, steel profiles <= 0.65 m2);
+	// courtyards, light wells etc. are much bigger and must stay.
+	const double kMaxColumnVoidArea = 1.0; // [m2]
+	const shared_ptr<CurveConverter>& curveConverter = m_geometryConverter.getRepresentationConverter()->getCurveConverter();
+
+	int spacesChanged = 0;
+	int voidsRemoved = 0;
+	std::function<void(const shared_ptr<IFC4X3::IfcRepresentationItem>&, bool&)> processItem;
+	processItem = [&](const shared_ptr<IFC4X3::IfcRepresentationItem>& item, bool& changed) {
+		if(item == nullptr)
+			return;
+		shared_ptr<IFC4X3::IfcBooleanResult> boolResult = dynamic_pointer_cast<IFC4X3::IfcBooleanResult>(item);
+		if(boolResult != nullptr) {
+			processItem(dynamic_pointer_cast<IFC4X3::IfcRepresentationItem>(boolResult->m_FirstOperand), changed);
+			return;
+		}
+		shared_ptr<IFC4X3::IfcExtrudedAreaSolid> extrusion = dynamic_pointer_cast<IFC4X3::IfcExtrudedAreaSolid>(item);
+		if(extrusion == nullptr)
+			return;
+		shared_ptr<IFC4X3::IfcArbitraryProfileDefWithVoids> profile =
+				dynamic_pointer_cast<IFC4X3::IfcArbitraryProfileDefWithVoids>(extrusion->m_SweptArea);
+		if(profile == nullptr || profile->m_InnerCurves.empty())
+			return;
+
+		std::vector<shared_ptr<IFC4X3::IfcCurve>> keptCurves;
+		for(const shared_ptr<IFC4X3::IfcCurve>& curve : profile->m_InnerCurves) {
+			std::vector<vec2> points;
+			std::vector<vec2> segmentStartPoints;
+			try {
+				curveConverter->convertIfcCurve2D(curve, points, segmentStartPoints, true);
+			}
+			catch(...) {
+				points.clear();
+			}
+			double area = 0;
+			for(size_t i=0; i<points.size(); ++i) {
+				const vec2& p1 = points[i];
+				const vec2& p2 = points[(i+1) % points.size()];
+				area += p1.x * p2.y - p2.x * p1.y;
+			}
+			area = std::fabs(area) * 0.5;
+			if(points.size() >= 3 && area <= kMaxColumnVoidArea) {
+				++voidsRemoved;
+				changed = true;
+			}
+			else {
+				keptCurves.push_back(curve);
+			}
+		}
+		profile->m_InnerCurves = keptCurves;
+	};
+
+	for(const auto& entityIt : m_geometryConverter.getBuildingModel()->getMapIfcEntities()) {
+		shared_ptr<IFC4X3::IfcSpace> space = dynamic_pointer_cast<IFC4X3::IfcSpace>(entityIt.second);
+		if(space == nullptr || space->m_Representation == nullptr)
+			continue;
+		bool changed = false;
+		for(const auto& rep : space->m_Representation->m_Representations) {
+			if(rep == nullptr)
+				continue;
+			for(const auto& item : rep->m_Items)
+				processItem(item, changed);
+		}
+		if(changed)
+			++spacesChanged;
+	}
+	Logger::instance() << "fillColumnVoidsInSpaces: removed " << voidsRemoved << " column voids in "
+					   << spacesChanged << " spaces";
+	if(voidsRemoved > 0)
+		Logger::instance().summary("Model", "column voids closed in space profiles: " + std::to_string(voidsRemoved)
+								   + " in " + std::to_string(spacesChanged) + " spaces (IFCC_KEEP_SPACE_VOIDS=1 keeps them)");
+}
+
+void IFCReader::summarizeModel() const {
+	Logger& log = Logger::instance();
+	int spaces = 0;
+	int storeys = 0;
+	for(const auto& building : m_site.m_buildings) {
+		if(building == nullptr)
+			continue;
+		for(const auto& storey : building->storeys()) {
+			if(storey == nullptr)
+				continue;
+			++storeys;
+			spaces += (int)storey->spaces().size();
+		}
+	}
+	log.summary("Model", "buildings " + std::to_string(m_site.m_buildings.size()) + ", storeys "
+				+ std::to_string(storeys) + ", spaces " + std::to_string(spaces));
+	log.summary("Model", "elements: constructions " + std::to_string(m_buildingElements.m_constructionElements.size())
+				+ ", construction-similar " + std::to_string(m_buildingElements.m_constructionSimilarElements.size())
+				+ ", openings (windows/doors) " + std::to_string(m_buildingElements.m_openingElements.size())
+				+ ", other " + std::to_string(m_buildingElements.m_otherElements.size())
+				+ ", without geometry " + std::to_string(m_buildingElements.m_elementsWithoutSurfaces.size())
+				+ ", opening voids " + std::to_string(m_openings.size()));
+
+	// convert errors as shown in the import dialog, grouped by message
+	std::map<std::string, int> errorsByText;
+	// numbers in the texts (ids, counts) would prevent grouping
+	const std::regex number("[0-9]+");
+	for(const ConvertError& err : m_convertErrors)
+		++errorsByText[std::regex_replace(err.m_errorText, number, "#")];
+	std::vector<std::pair<std::string, int>> sorted(errorsByText.begin(), errorsByText.end());
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+	log.summary("Convert errors (import dialog)", std::to_string(m_convertErrors.size()) + " errors");
+	for(const auto& e : sorted)
+		log.summary("Convert errors (import dialog)", "  " + std::to_string(e.second) + "x " + e.first);
+}
+
+void IFCReader::summarizeRooms(const VICUS::Project& project, const RoomHealStats& healStats) const {
+	struct RoomInfo {
+		std::string	m_text;
+		int			m_rank;
+		double		m_openLength;
+	};
+	std::vector<RoomInfo> problems;
+	int valid = 0, warning = 0, error = 0;
+	for(const VICUS::Building& b : project.m_buildings) {
+		for(const VICUS::BuildingLevel& bl : b.m_buildingLevels) {
+			for(const VICUS::Room& r : bl.m_rooms) {
+				const VICUS::Room::RoomStatus st = r.roomStatus();
+				if(st == VICUS::Room::RS_Valid) {
+					++valid;
+					continue;
+				}
+				RoomInfo info;
+				info.m_rank = st == VICUS::Room::RS_Warning ? 1 : 2;
+				if(info.m_rank == 1)
+					++warning;
+				else
+					++error;
+				double openLength = 0;
+				size_t segments = 0;
+				try {
+					for(const auto& seg : r.uncoveredSegments()) {
+						openLength += (seg.m_end - seg.m_start).magnitude();
+						++segments;
+					}
+				}
+				catch(...) {}
+				std::string cause;
+				try {
+					r.volume();
+				}
+				catch(IBK::Exception&) {
+					cause += ", volume invalid";
+				}
+				try {
+					r.area();
+				}
+				catch(IBK::Exception&) {
+					cause += ", floor area invalid";
+				}
+				std::ostringstream os;
+				os << "  " << (info.m_rank == 1 ? "warning " : "ERROR   ") << r.m_displayName.toStdString()
+				   << " (id " << r.m_id << ", level '" << bl.m_displayName.toStdString() << "'): "
+				   << r.surfaces().size() << " surfaces, open edges " << std::fixed << std::setprecision(2)
+				   << openLength << " m in " << segments << " segments" << cause;
+				info.m_text = os.str();
+				info.m_openLength = openLength;
+				problems.push_back(info);
+			}
+		}
+	}
+	Logger& log = Logger::instance();
+	log.summary("Rooms", std::to_string(valid + warning + error) + " rooms: " + std::to_string(valid) + " valid, "
+				+ std::to_string(warning) + " warning (open), " + std::to_string(error) + " error");
+	log.summary("Rooms", "room healer: errors " + std::to_string(healStats.m_errBefore) + " -> "
+				+ std::to_string(healStats.m_errAfter) + ", warnings " + std::to_string(healStats.m_warnBefore)
+				+ " -> " + std::to_string(healStats.m_warnAfter) + ", holes closed "
+				+ std::to_string(healStats.m_holesClosed) + ", reverted " + std::to_string(healStats.m_roomsReverted));
+	std::sort(problems.begin(), problems.end(), [](const RoomInfo& a, const RoomInfo& b) {
+		return a.m_rank > b.m_rank || (a.m_rank == b.m_rank && a.m_openLength > b.m_openLength);
+	});
+	for(const RoomInfo& info : problems)
+		log.summary("Rooms", info.m_text);
 }
 
 const ConvertOptions &IFCReader::convertOptions() const {
@@ -821,6 +1044,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		if(notify)
 			notify->notify(0.05, QT_TRANSLATE_NOOP("IFCC::ProgressHandler", "Convert geometry"));
 		Logger::instance().beginStep("convert-geometry");
+		fillColumnVoidsInSpaces();
 		// convert IFC geometric representations into Carve geometry
 		const double length_in_meter = m_geometryConverter.getBuildingModel()->getUnitConverter()->getLengthInMeterFactor();
 		Logger::instance() << "length_in_meter=" << length_in_meter
@@ -1053,6 +1277,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		Logger::instance().beginStep("convert-done");
 		Logger::instance() << "convert completed successfully; errors=" << m_convertErrors.size()
 						   << " hasError=" << (m_hasError ? 1 : 0);
+		summarizeModel();
 
 		return true;
 
@@ -1063,7 +1288,7 @@ bool IFCReader::convert(bool useSpaceBoundaries, IBK::NotificationHandler* notif
 		err.m_errorText = "Exception: '" + std::string(e.what()) + "' while converting ifc file.";
 		m_convertErrors.push_back(err);
 		m_hasError = true;
-		Logger::instance() << "convert exception: " << e.what();
+		Logger::instance().error() << "convert exception: " << e.what();
 
 		return false;
 	}
@@ -1226,6 +1451,7 @@ QString IFCReader::nameForId(int id, Name_Id_Type type) const {
 
 
 VICUS::Project IFCReader::buildVicusProject() const {
+	Logger::instance().beginStep("build-vicus-project");
 	VICUS::Project project;
 	std::map<int,int> idMap;
 	m_database.addToVicusProject(&project, idMap);
@@ -1303,7 +1529,9 @@ VICUS::Project IFCReader::buildVicusProject() const {
 
 	// Structured room-geometry post-processing: drop duplicate surfaces, repair
 	// winding, close remaining shell holes (per-room safety net inside).
-	healRooms(project);
+	RoomHealStats healStats = healRooms(project);
+	summarizeRooms(project, healStats);
+	Logger::instance().finish();
 
 	return project;
 }
@@ -1599,7 +1827,8 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 			++unmatched;
 			#pragma omp critical(ifcc_logger)
 			{
-				Logger::instance() << "opening has no surfaces; id=" << opening.m_id
+				Logger::instance().count("openings without geometry");
+				Logger::instance().debug() << "opening has no surfaces; id=" << opening.m_id
 								   << " ifcTag=#" << opening.m_ifcId
 								   << " name='" << opening.m_name << "'";
 			}
@@ -1677,7 +1906,7 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 				constructionId = bestId;
 				#pragma omp critical(ifcc_logger)
 				{
-					Logger::instance() << "opening matched by AABB containment; id=" << opening.m_id
+					Logger::instance().debug() << "opening matched by AABB containment; id=" << opening.m_id
 									   << " name='" << opening.m_name << "'"
 									   << " elementId=" << bestId
 									   << " overlapRatio=" << bestScore;
@@ -1734,7 +1963,7 @@ void IFCReader::checkAndMatchOpeningsToConstructions(IBK::NotificationHandler* n
 			}
 			#pragma omp critical(ifcc_logger)
 			{
-				Logger::instance() << "unmatched opening id=" << opening.m_id
+				Logger::instance().debug() << "opening without host element: id=" << opening.m_id
 								   << " ifcTag=#" << opening.m_ifcId
 								   << " name='" << opening.m_name << "'"
 								   << " surfaces=" << opening.surfaces().size()

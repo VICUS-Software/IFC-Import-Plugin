@@ -93,6 +93,14 @@ bool IFCImportPlugin::runCLI(const QString & ifcPath, const QString & vicusPath,
 	for(IFCC::BuildingElementTypes t : IFCC::constructionTypes())
 		reader.setElementsForSpaceBoundaries(t, true);
 	reader.setElementsForSpaceBoundaries(IFCC::BET_BuildingElementPart, true);
+	// IFCC_GUI_DEFAULTS=1: same element types as the import dialog defaults
+	// (all construction-similar types except columns).
+	if(std::getenv("IFCC_GUI_DEFAULTS")) {
+		for(IFCC::BuildingElementTypes t : IFCC::constructionSimilarTypes()) {
+			if(t != IFCC::BET_Column)
+				reader.setElementsForSpaceBoundaries(t, true);
+		}
+	}
 
 	// Matching mode override for batch tests (mirrors the GUI scenarios):
 	// IFCC_MATCHING = each | first | n | none

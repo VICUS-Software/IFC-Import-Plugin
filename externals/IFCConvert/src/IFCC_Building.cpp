@@ -281,7 +281,8 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 			// glues the window onto an unrelated wall fragment — worse than leaving
 			// the opening unmatched and reporting it.
 			if(elemArea > 0.1 && bc.area < 0.30 * elemArea) {
-				Logger::instance() << "Building::updateStoreys: SKIP sliver match opening id=" << op.m_id
+				Logger::instance().count("opening matching: cross-space sliver match skipped (<30% of element)");
+				Logger::instance().debug() << "Building::updateStoreys: SKIP sliver match opening id=" << op.m_id
 								   << " name='" << op.m_name << "' bestArea=" << bc.area
 								   << " elemArea=" << elemArea
 								   << " sb='" << bc.parentSB->m_name << "'";
@@ -300,7 +301,7 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 				for(size_t pi=0; pi<pieces.size(); ++pi) {
 					best->space->commitOpeningMatch(op, pieces[pi], convertOptions);
 					if(pi > 0) {
-						Logger::instance() << "Building::updateStoreys: SPLIT cross-commit opening id=" << op.m_id
+						Logger::instance().debug() << "Building::updateStoreys: SPLIT cross-commit opening id=" << op.m_id
 										   << " name='" << op.m_name << "' -> sb='" << pieces[pi].parentSB->m_name
 										   << "' area=" << pieces[pi].area;
 					}
@@ -455,7 +456,8 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 					sc.space->commitOpeningMatch(op, cc, convertOptions);
 					committedSides.push_back(cc.mergedSurface);
 					++matchedMultiSpace;
-					Logger::instance() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
+					Logger::instance().count("opening matching: multi-space commits (second side)");
+					Logger::instance().debug() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
 									   << " name='" << op.m_name << "' space='" << sc.space->m_name << "'"
 									   << " sb='" << cc.parentSB->m_name << "' area=" << cc.area
 									   << " rel=complement";
@@ -492,7 +494,8 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 			sc.space->commitOpeningMatch(op, sc.cand, convertOptions);
 			committedSides.push_back(sc.cand.mergedSurface);
 			++matchedMultiSpace;
-			Logger::instance() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
+			Logger::instance().count("opening matching: multi-space commits (second side)");
+			Logger::instance().debug() << "Building::updateStoreys: MULTI-SPACE commit opening id=" << op.m_id
 							   << " name='" << op.m_name << "' space='" << sc.space->m_name << "'"
 							   << " sb='" << sc.cand.parentSB->m_name << "' area=" << sc.cand.area
 							   << " dist=" << sc.cand.dist << " rel=" << (rel == SR_Complement ? "complement" : "opposite");
@@ -570,22 +573,38 @@ bool Building::updateStoreys(const objectShapeTypeVector_t& elementShapes,
 	}
 	// Post-mortem: every window/door opening still without any space boundary is a
 	// lost subsurface — log them with the data needed to debug (IFCC_DEBUG_OPENING_ID).
+	// The summary groups them by window/door name.
+	std::map<std::string, int> unmatchedByName;
+	int windowDoorOpenings = 0;
 	for(const Opening& op : openings) {
-		if(op.hasSpaceBoundary())
-			continue;
-		bool isWindowOrDoor = false;
+		std::shared_ptr<BuildingElement> fill;
 		for(int eid : op.openingElementIds()) {
 			std::shared_ptr<BuildingElement> be = buildingElements.fromID(eid);
 			if(be && (be->type() == BET_Window || be->type() == BET_Door)) {
-				isWindowOrDoor = true;
+				fill = be;
 				break;
 			}
 		}
-		if(isWindowOrDoor) {
-			Logger::instance() << "Building::updateStoreys: UNMATCHED opening id=" << op.m_id
-							   << " guid=" << op.guid() << " name='" << op.m_name << "'";
-		}
+		if(fill == nullptr)
+			continue;
+		++windowDoorOpenings;
+		if(op.hasSpaceBoundary())
+			continue;
+		++unmatchedByName[(fill->type() == BET_Window ? "window '" : "door '") + fill->m_name + "'"];
+		Logger::instance().warning() << "window/door not matched to any room: opening id=" << op.m_id
+									 << " guid=" << op.guid() << " element='" << fill->m_name
+									 << "' elementGuid=" << fill->m_guid;
 	}
+	int unmatched = 0;
+	for(const auto& u : unmatchedByName)
+		unmatched += u.second;
+	Logger::instance().summary("Windows/doors", "building '" + m_name + "': " + std::to_string(windowDoorOpenings)
+							   + " openings with window/door, " + std::to_string(unmatched) + " not matched to any room");
+	std::vector<std::pair<std::string, int>> sortedUnmatched(unmatchedByName.begin(), unmatchedByName.end());
+	std::sort(sortedUnmatched.begin(), sortedUnmatched.end(),
+			  [](const auto& a, const auto& b) { return a.second > b.second; });
+	for(const auto& u : sortedUnmatched)
+		Logger::instance().summary("Windows/doors", "  unmatched " + std::to_string(u.second) + "x " + u.first);
 
 	return true;
 }

@@ -398,7 +398,8 @@ Surface SpaceBoundary::surfaceWithSubsurfaces() const {
 		if(!ts.addSubSurface(sub->surface(), virtualConnection)) {
 			// The opening polygon doesn't fit on this parent (clip empty or subsurface
 			// invalid) — the window/door silently disappears from the output otherwise.
-			Logger::instance() << "surfaceWithSubsurfaces: DROPPED opening sb id=" << sub->m_id
+			Logger::instance().count("windows/doors dropped: do not fit on their wall");
+			Logger::instance().warning() << "window/door dropped (does not fit on its wall): opening sb id=" << sub->m_id
 							   << " name='" << sub->m_nameRelatedElement << "'"
 							   << " from parent sb id=" << m_id
 							   << " name='" << m_nameRelatedElement << "'"
@@ -432,7 +433,8 @@ void SpaceBoundary::addContainedOpeningSpaceBoundaries(const std::shared_ptr<Spa
 			if(!inter.isValid(1e-4))
 				continue;
 			if(inter.area() > 0.6 * newArea) {
-				Logger::instance() << "addContainedOpeningSpaceBoundaries: REJECT overlapping opening"
+				Logger::instance().count("openings rejected: overlapping an already attached opening");
+				Logger::instance().debug() << "addContainedOpeningSpaceBoundaries: REJECT overlapping opening"
 								   << " new='" << containedOpeningSpaceBoundaries->m_nameRelatedElement << "'"
 								   << " (area=" << newArea << ")"
 								   << " overlaps existing='" << existing->m_nameRelatedElement << "'"
@@ -480,20 +482,24 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 		return vsurf;
 
 	Surface s = surfaceWithSubsurfaces();
-	if(!s.check(options.m_polygonEps))
+	if(!s.check(options.m_polygonEps)) {
+		Logger::instance().count("room surfaces dropped: invalid polygon");
+		Logger::instance().debug() << "getVicusSurface: SKIP sb id=" << m_id << " name='" << m_nameRelatedElement
+						   << "' (check failed, verts=" << s.polygon().size() << " area=" << s.area() << ")";
 		return vsurf;
+	}
 
 	// Create 3D polygon from the IFCC surface polygon - validate before proceeding
 	const std::vector<IBKMK::Vector3D>& polyVect = s.polygon();
 	if(polyVect.size() < 3) {
-		Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
+		Logger::instance().warning() << "room surface '" << s.name() << "' (id " << s.id()
 			<< ") has less than 3 vertices - skipping";
 		return vsurf;
 	}
 
 	IBKMK::Polygon3D poly3D(polyVect);
 	if(!poly3D.isValid()) {
-		Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
+		Logger::instance().warning() << "room surface '" << s.name() << "' (id " << s.id()
 			<< ") has invalid 3D polygon - skipping";
 		return vsurf;
 	}
@@ -502,8 +508,11 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 	// The helper logs the specific failure mode (Polygon2D collapse, first-vertex
 	// shift after collinear elimination, or rotation precondition violation) so the
 	// root cause can be diagnosed from the import log.
-	if(!willSurviveXmlRoundTrip(poly3D, s.name(), s.id()))
+	if(!willSurviveXmlRoundTrip(poly3D, s.name(), s.id())) {
+		Logger::instance().warning() << "room surface '" << s.name() << "' (id " << s.id()
+									 << ") dropped: polygon does not survive the VICUS XML round-trip";
 		return vsurf;
+	}
 
 	// Set id, displayName, ifcGUID
 	vsurf.m_id = s.id();
@@ -522,14 +531,14 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 		// Validate 2D polygon before creating VICUS subsurface
 		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
 		if(poly2D.size() < 3) {
-			Logger::instance() << "Warning: SubSurface '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().warning() << "room subsurface '" << sub.name() << "' (id " << sub.id()
 				<< ") has less than 3 vertices - skipping";
 			continue;
 		}
 
 		VICUS::Polygon2D vicusPoly2D(poly2D);
 		if(!vicusPoly2D.isValid()) {
-			Logger::instance() << "Warning: SubSurface '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().warning() << "room subsurface '" << sub.name() << "' (id " << sub.id()
 				<< ") has invalid 2D polygon - skipping";
 			continue;
 		}
@@ -554,14 +563,14 @@ VICUS::Surface SpaceBoundary::getVicusSurface(const ConvertOptions& options) con
 
 		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
 		if(poly2D.size() < 3) {
-			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().warning() << "room hole '" << sub.name() << "' (id " << sub.id()
 				<< ") has less than 3 vertices - skipping";
 			continue;
 		}
 
 		VICUS::Polygon2D vicusPoly2D(poly2D);
 		if(!vicusPoly2D.isValid()) {
-			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().warning() << "room hole '" << sub.name() << "' (id " << sub.id()
 				<< ") has invalid 2D polygon - skipping";
 			continue;
 		}

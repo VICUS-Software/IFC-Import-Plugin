@@ -26,6 +26,7 @@
 #include "IFCC_Database.h"
 #include "IFCC_Instances.h"
 #include "IFCC_BuildingElementsCollector.h"
+#include "IFCC_RoomHealer.h"
 
 namespace IFCC {
 
@@ -252,6 +253,20 @@ private:
 		model and set element parent ids (storey containment, or containing wall for
 		windows/doors). Must run after updateStoreys (m_site populated). */
 	void updateIFCModelTopology();
+
+	/*! Removes small voids (column cut-outs) from extruded IfcSpace profiles
+		(IfcArbitraryProfileDefWithVoids) if columns are not selected as elements for
+		space boundaries. Otherwise the room shell contains the column mantles and floor/ceiling
+		faces with holes, which can't be exported as closed VICUS rooms.
+		Must be called before geometry conversion.*/
+	void fillColumnVoidsInSpaces();
+
+	/*! Adds model statistics and the grouped convert errors to the log summary. */
+	void summarizeModel() const;
+
+	/*! Adds the final room status (after room healing) to the log summary: counts and
+		one line per open/broken room, worst first. */
+	void summarizeRooms(const VICUS::Project& project, const RoomHealStats& healStats) const;
 
 	IBK::Path						m_filename;				///< IFC file
 	std::shared_ptr<BuildingModel>	m_model;				///< IFC model created from file

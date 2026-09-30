@@ -140,7 +140,7 @@ int dropBrokenSubsurfaces(std::vector<VICUS::Surface>& surfs, std::set<unsigned 
 				droppedSubIds.insert(sub.m_id);
 				++dropped;
 				changed = true;
-				Logger::instance() << "room-heal: drop broken subsurface '" << sub.m_displayName.toStdString()
+				Logger::instance().warning() << "room-heal: drop broken subsurface '" << sub.m_displayName.toStdString()
 								   << "' of surface '" << s.m_displayName.toStdString() << "'";
 			}
 		}
@@ -569,7 +569,7 @@ bool tryTrimOverhang(std::vector<VICUS::Surface>& surfs, const polygon3D_t& loop
 				continue;
 		}
 		s.setPolygon3D(p3);
-		Logger::instance() << "room-heal: overhang-trim surface '" << s.m_displayName.toStdString()
+		Logger::instance().debug() << "room-heal: overhang-trim surface '" << s.m_displayName.toStdString()
 						   << "' by " << loopArea << " m2";
 		return true;
 	}

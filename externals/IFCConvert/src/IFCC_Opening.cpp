@@ -178,7 +178,8 @@ void Opening::repairOversizedBody() {
 		surf.setSideType(Surface::ST_ProbableSide);
 		m_surfaces.push_back(surf);
 	}
-	Logger::instance() << "opening-repair: id=" << m_id << " name='" << m_name << "'"
+	Logger::instance().count("openings: inflated opening body repaired");
+	Logger::instance().debug() << "opening-repair: id=" << m_id << " name='" << m_name << "'"
 					   << " inflated extent=" << (tmax - tmin)
 					   << " -> slab [" << intMin << "," << intMax << "] depth=" << depth
 					   << " hullPts=" << hull.size();

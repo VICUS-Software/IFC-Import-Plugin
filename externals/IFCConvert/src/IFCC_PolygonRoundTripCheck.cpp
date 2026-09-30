@@ -50,7 +50,8 @@ bool willSurviveXmlRoundTrip(const IBKMK::Polygon3D& poly3D,
 		rtLocalX = IBKMK::Vector3D::fromString(poly3D.localX().toString(16));
 	}
 	catch (...) {
-		Logger::instance() << "Warning: Surface '" << surfaceName << "' (id " << surfaceId
+		Logger::instance().count("polygons failing XML round-trip: vec-serialize");
+		Logger::instance().debug() << "surface '" << surfaceName << "' (id " << surfaceId
 			<< ") round-trip failed [vec-serialize]: offset/normal/localX threw on fromString()"
 			<< " - skipping";
 		return false;
@@ -75,7 +76,8 @@ bool willSurviveXmlRoundTrip(const IBKMK::Polygon3D& poly3D,
 	const size_t vertsAfter  = rtPoly2D.vertexes().size();
 
 	if (!rtPoly2D.isValid()) {
-		Logger::instance() << "Warning: Surface '" << surfaceName << "' (id " << surfaceId
+		Logger::instance().count("polygons failing XML round-trip: polyline");
+		Logger::instance().debug() << "surface '" << surfaceName << "' (id " << surfaceId
 			<< ") round-trip failed [polyline]: Polygon2D invalid after collinear-elim"
 			<< " (verts " << vertsBefore << "->" << vertsAfter
 			<< "; either <3 verts left or non-simple/self-intersecting)"
@@ -89,7 +91,8 @@ bool willSurviveXmlRoundTrip(const IBKMK::Polygon3D& poly3D,
 	if (firstAfter != IBKMK::Vector2D(0.0, 0.0)) {
 		const double shift = std::sqrt(firstAfter.m_x*firstAfter.m_x +
 									   firstAfter.m_y*firstAfter.m_y);
-		Logger::instance() << "Warning: Surface '" << surfaceName << "' (id " << surfaceId
+		Logger::instance().count("polygons failing XML round-trip: first-vertex");
+		Logger::instance().debug() << "surface '" << surfaceName << "' (id " << surfaceId
 			<< ") round-trip failed [first-vertex]: anchor (0,0) dropped by collinear-elim"
 			<< " (verts " << vertsBefore << "->" << vertsAfter
 			<< ", new first=(" << firstAfter.m_x << "," << firstAfter.m_y
@@ -105,7 +108,8 @@ bool willSurviveXmlRoundTrip(const IBKMK::Polygon3D& poly3D,
 		const double devNormalMag = std::abs(normalMagSqRt - 1.0);
 		const double devLocalXMag = std::abs(localXMagSqRt - 1.0);
 		const double devOrtho     = std::abs(dotRt);
-		Logger::instance() << "Warning: Surface '" << surfaceName << "' (id " << surfaceId
+		Logger::instance().count("polygons failing XML round-trip: rotation");
+		Logger::instance().debug() << "surface '" << surfaceName << "' (id " << surfaceId
 			<< ") round-trip failed [rotation]: Polygon3D rejected by setRotation (tol=1e-4);"
 			<< " |N|^2 orig=" << normalMagSqOrig << " rt=" << normalMagSqRt
 			<< " dev=" << devNormalMag

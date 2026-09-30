@@ -365,7 +365,7 @@ void Instances::addToVicusProject(VICUS::Project* project, const Database& datab
 	}
 
 	if(skippedNormal > 0 || skippedSub > 0) {
-		Logger::instance() << "Warning: Skipped " << skippedNormal << " component instances and "
+		Logger::instance().warning() << "Skipped " << skippedNormal << " component instances and "
 			<< skippedSub << " sub-surface component instances referencing non-existing surfaces";
 	}
 

@@ -122,7 +122,7 @@ void Space::fetchGeometry(std::shared_ptr<ProductShapeData> productShape, std::v
 				nOpen += item->m_meshsets_open.size();
 			}
 		}
-		Logger::instance() << "Space::fetchGeometry: NO-SHELL space=" << m_id
+		Logger::instance().warning() << "Space::fetchGeometry: NO-SHELL space=" << m_id
 						   << " ifcTag=#" << m_ifcId
 						   << " name='" << m_name << "'"
 						   << " reps=" << nReps << " [" << repIds << "]"
@@ -763,7 +763,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 			size_t ssi = workQueue.front();
 			workQueue.pop_front();
 			if(iters % 500 == 0)
-				Logger::instance() << "SB2 progress space '" << m_name << "' iters=" << iters << " queue=" << workQueue.size()
+				Logger::instance().debug() << "SB2 progress space '" << m_name << "' iters=" << iters << " queue=" << workQueue.size()
 								   << " surfaces=" << surfaces.size() << " sbs=" << spaceBoundaries.size()
 								   << " intersect2=" << stats.m_intersectCalls << " ssi=" << ssi
 								   << " area=" << surfaces[ssi].area() << " verts=" << surfaces[ssi].polygon().size()
@@ -853,7 +853,7 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				surfaces[ssi].setNewPolygon({});
 			}
 			else if(restArea > spaceArea - convertOptions.m_minimumSurfaceArea) {
-				Logger::instance() << "SB2 no progress space '" << m_name << "' id=" << m_id << " surface=" << ssi
+				Logger::instance().warning() << "SB2 no progress space '" << m_name << "' id=" << m_id << " surface=" << ssi
 								   << " area=" << spaceArea << " rest=" << restArea << " - not requeued";
 				errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching made no progress on a space surface"});
 			}
@@ -878,10 +878,14 @@ std::vector<std::shared_ptr<SpaceBoundary>> Space::createSpaceBoundaries_2(const
 				errors.push_back(ConvertError{OT_Space, m_id, "rest surface from intersection from space surface and building element surface has holes"});
 		}
 
-		Logger::instance() << "SB2 end space '" << m_name << "' id=" << m_id << " iters=" << iters
+		const long long sbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+		// slow spaces are worth a look (performance), the rest is detail
+		const bool slow = sbMs > 10000;
+		Logger::instance().line(slow ? Logger::L_Warning : Logger::L_Debug)
+						   << (slow ? "slow space-boundary creation: " : "")
+						   << "SB2 end space '" << m_name << "' id=" << m_id << " iters=" << iters
 						   << " surfaces=" << surfaces.size() << " intersect2=" << stats.m_intersectCalls
-						   << " maxCheap=" << stats.m_maxCheap << " maxVerts=" << stats.m_maxVerts << " ms="
-						   << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+						   << " maxCheap=" << stats.m_maxCheap << " maxVerts=" << stats.m_maxVerts << " ms=" << sbMs;
 		if(iters >= TOTAL_MAX_ITER)
 			errors.push_back(ConvertError{OT_Space, m_id, "space-boundary matching hit iteration cap — some surfaces may be marked missing"});
 	}
@@ -1018,7 +1022,7 @@ static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const s
 		   openingArea >= kMinOpeningArea &&
 		   sbArea > 0.0 &&
 		   openingArea < 0.5 * sbArea) {
-			Logger::instance() << "matchingOpeningSurface: coplanar-accept"
+			Logger::instance().debug() << "matchingOpeningSurface: coplanar-accept"
 							   << " sb='" << spaceBoundary->m_name << "'"
 							   << " openingArea=" << openingArea
 							   << " sbArea=" << sbArea;
@@ -1046,7 +1050,8 @@ static Surface matchingOpeningSurface(const Surface& currentOpeningSurf, const s
 	double sbArea      = spaceBoundary->surface().area();
 	double minInput    = std::min(openingArea, sbArea);
 	if(minInput > 0.0 && interArea / minInput < 0.10) {
-		Logger::instance() << "matchingOpeningSurface: reject thin-strip"
+		Logger::instance().count("opening matching: candidate rejected (thin strip)");
+		Logger::instance().debug() << "matchingOpeningSurface: reject thin-strip"
 						   << " sb='" << spaceBoundary->m_name << "'"
 						   << " interArea=" << interArea
 						   << " openingArea=" << openingArea
@@ -1339,7 +1344,7 @@ static Surface computeOpeningMatchSurface(Opening& currOp, const std::shared_ptr
 		static std::atomic<long> noMatchCount(0);
 		const long n = ++noMatchCount;
 		if(n <= 200 || n % 10000 == 0) {
-			Logger::instance() << "computeOpeningMatchSurface: NO-MATCH"
+			Logger::instance().debug() << "computeOpeningMatchSurface: NO-MATCH"
 							   << " opening id=" << currOp.m_id
 							   << " name='" << currOp.m_name << "'"
 							   << " sb='" << spaceBoundary->m_name << "'"
@@ -1468,7 +1473,7 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		return;
 
 	const std::string spaceTag = m_longName.empty() ? m_name : m_longName;
-	Logger::instance() << "space-openings: BEGIN space='" << spaceTag << "' id=" << m_id
+	Logger::instance().debug() << "space-openings: BEGIN space='" << spaceTag << "' id=" << m_id
 					   << " totalOpenings=" << openings.size()
 					   << " totalSBs=" << spaceBoundaries.size();
 
@@ -1533,7 +1538,8 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		if(openingElem) {
 			double elemArea = openingElem->openingArea();
 			if(elemArea > 0.1 && area > 3.0 * elemArea) {
-				Logger::instance() << "space-openings: REJECT oversized candidate opening id=" << currOp.m_id
+				Logger::instance().count("opening matching: candidate rejected (oversized)");
+				Logger::instance().debug() << "space-openings: REJECT oversized candidate opening id=" << currOp.m_id
 								   << " name='" << currOp.m_name << "' area=" << area
 								   << " elementArea=" << elemArea << " sb='" << sb->m_name << "'";
 				return;
@@ -1552,7 +1558,8 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			// face sliced along a partition wall far from the actual window.
 			const double kMaxElemDist = 2.0;
 			if(elemDist > kMaxElemDist) {
-				Logger::instance() << "space-openings: REJECT far-element opening id=" << currOp.m_id
+				Logger::instance().count("opening matching: candidate rejected (far from element)");
+				Logger::instance().debug() << "space-openings: REJECT far-element opening id=" << currOp.m_id
 								   << " name='" << currOp.m_name << "' elemDist=" << elemDist
 								   << " sb='" << sb->m_name << "' area=" << area;
 				return;
@@ -1691,7 +1698,8 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		if(cand.openingElem) {
 			double elemArea = cand.openingElem->openingArea();
 			if(elemArea > 0.1 && combinedArea < 0.5 * elemArea) {
-				Logger::instance() << "space-openings: DEFER low-coverage space='" << spaceTag << "'"
+				Logger::instance().count("opening matching: deferred to cross-space fallback (low coverage)");
+				Logger::instance().debug() << "space-openings: DEFER low-coverage space='" << spaceTag << "'"
 								   << " opening id=" << opid << " name='" << fitOp->m_name << "'"
 								   << " area=" << combinedArea << " elemArea=" << elemArea
 								   << " sb='" << cand.parentSB->m_name << "'";
@@ -1703,13 +1711,15 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 			addOpeningSpaceBoundary(p.mergedSurface, *fitOp, p.parentSB, p.openingElem,
 									m_longName, openingSpaceBoundaries, *this, convertOptions);
 			if(pci > 0) {
-				Logger::instance() << "space-openings: SPLIT-COMMIT space='" << spaceTag << "'"
+				Logger::instance().count("opening matching: split commits");
+				Logger::instance().debug() << "space-openings: SPLIT-COMMIT space='" << spaceTag << "'"
 								   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
 								   << " -> sb='" << p.parentSB->m_name << "' area=" << p.area;
 			}
 		}
 		++committed;
-		Logger::instance() << "space-openings: COMMIT space='" << spaceTag << "'"
+		Logger::instance().count("opening matching: commits in own space");
+		Logger::instance().debug() << "space-openings: COMMIT space='" << spaceTag << "'"
 						   << " opening id=" << fitOp->m_id << " name='" << fitOp->m_name << "'"
 						   << " -> sb='" << cand.parentSB->m_name << "' area=" << cand.area;
 	}
@@ -1723,14 +1733,14 @@ void Space::createSpaceBoundariesForOpeningsFromSpaceBoundaries(std::vector<std:
 		auto fitOp = std::find_if(openings.begin(), openings.end(),
 								  [opid](const auto& op) -> bool { return op.m_id == opid; });
 		std::string opName = fitOp != openings.end() ? fitOp->m_name : std::string("<missing>");
-		Logger::instance() << "space-openings: NO-MATCH space='" << spaceTag << "'"
+		Logger::instance().debug() << "space-openings: NO-MATCH space='" << spaceTag << "'"
 						   << " opening id=" << opid << " name='" << opName << "'"
 						   << " candidatesConsidered=" << tr.second.considered
 						   << " validMatches=" << tr.second.validMatches
 						   << " triedSBs=[" << tr.second.triedSbNames << "]";
 	}
 
-	Logger::instance() << "space-openings: END space='" << spaceTag << "' id=" << m_id
+	Logger::instance().debug() << "space-openings: END space='" << spaceTag << "' id=" << m_id
 					   << " committed=" << committed
 					   << " considered=" << traceByOp.size();
 
@@ -1857,7 +1867,8 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 		if(openingElem) {
 			double elemArea = openingElem->openingArea();
 			if(elemArea > 0.1 && area > 3.0 * elemArea) {
-				Logger::instance() << "space-openings: REJECT oversized candidate opening id=" << opening.m_id
+				Logger::instance().count("opening matching: candidate rejected (oversized)");
+				Logger::instance().debug() << "space-openings: REJECT oversized candidate opening id=" << opening.m_id
 								   << " name='" << opening.m_name << "' area=" << area
 								   << " elementArea=" << elemArea << " sb='" << sb->m_name << "'";
 				continue;
@@ -1877,7 +1888,8 @@ Space::OpeningMatchCandidate Space::findBestOpeningMatch(Opening& opening,
 			// wrong-wall candidate loses to the closer one instead of being hard-gated.
 			const double kMaxElemDistHard = 10.0;
 			if(elemDist > kMaxElemDistHard) {
-				Logger::instance() << "space-openings: REJECT far-element opening id=" << opening.m_id
+				Logger::instance().count("opening matching: candidate rejected (far from element)");
+				Logger::instance().debug() << "space-openings: REJECT far-element opening id=" << opening.m_id
 								   << " name='" << opening.m_name << "' elemDist=" << elemDist
 								   << " sb='" << sb->m_name << "' area=" << area;
 				continue;
@@ -1903,7 +1915,8 @@ void Space::commitOpeningMatch(Opening& opening,
 	if(addOpeningSpaceBoundary(candidate.mergedSurface, opening, candidate.parentSB, candidate.openingElem,
 							   m_longName, tmp, *this, convertOptions)) {
 		m_spaceBoundaries.insert(m_spaceBoundaries.end(), tmp.begin(), tmp.end());
-		Logger::instance() << "space-openings: CROSS-COMMIT space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+		Logger::instance().count("opening matching: cross-space commits");
+		Logger::instance().debug() << "space-openings: CROSS-COMMIT space='" << (m_longName.empty() ? m_name : m_longName) << "'"
 						   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
 						   << " -> sb='" << candidate.parentSB->m_name << "' area=" << candidate.area;
 	}
@@ -2081,7 +2094,8 @@ bool Space::expandMissingHostToOpeningOutline(Opening& opening,
 		return false;
 	}
 
-	Logger::instance() << "space-openings: EXPAND-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+	Logger::instance().count("opening matching: expand flaps (opening outline beyond boundary)");
+	Logger::instance().debug() << "space-openings: EXPAND-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
 					   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
 					   << " committed=" << committedArea << " outline=" << hullArea
 					   << " elemArea=" << elemArea << " flaps=" << flapsAdded
@@ -2237,7 +2251,8 @@ bool Space::attachOrphanOpeningFlap(Opening& opening,
 			continue;
 		Surface inter = other.intersect(hullSurf);
 		if(inter.isValid(convertOptions.m_distanceEps) && inter.area() > 0.5 * hullSurf.area()) {
-			Logger::instance() << "space-openings: ORPHAN-FLAP skip duplicate opening id=" << opening.m_id
+			Logger::instance().count("opening matching: orphan flaps skipped (duplicate)");
+			Logger::instance().debug() << "space-openings: ORPHAN-FLAP skip duplicate opening id=" << opening.m_id
 							   << " name='" << opening.m_name << "' covered by sb='" << sb->m_name << "'";
 			return true;
 		}
@@ -2262,7 +2277,8 @@ bool Space::attachOrphanOpeningFlap(Opening& opening,
 	m_spaceBoundaries.push_back(backSB);
 	opening.addSpaceBoundary(front);
 
-	Logger::instance() << "space-openings: ORPHAN-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
+	Logger::instance().count("opening matching: orphan flaps (empty openings)");
+	Logger::instance().debug() << "space-openings: ORPHAN-FLAP space='" << (m_longName.empty() ? m_name : m_longName) << "'"
 					   << " opening id=" << opening.m_id << " name='" << opening.m_name << "'"
 					   << " fill='" << bestFill->m_name << "' rim=" << bestRim
 					   << " area=" << hullSurf.area();
@@ -2336,13 +2352,15 @@ void Space::evaluateSpaceBoundaryTypes(const objectShapeTypeVector_t& shapes,
 			// produce interior boundary fragments that break the room volume and add
 			// no thermal value. They stay visible in the VicIFC 3D model.
 			if(betype == BET_Column) {
-				Logger::instance() << "Dropping IFC-authored space boundary id=" << sb->m_id
+				Logger::instance().count("IFC space boundaries dropped: columns");
+				Logger::instance().debug() << "Dropping IFC-authored space boundary id=" << sb->m_id
 								   << " (column boundaries are excluded from rooms)";
 				continue;
 			}
 			const bool dialogControls = isConstructionType(betype) || isConstructionSimilarType(betype);
 			if(dialogControls && !convertOptions.hasElementsForSpaceBoundaries(betype)) {
-				Logger::instance() << "Dropping IFC-authored space boundary id=" << sb->m_id
+				Logger::instance().count("IFC space boundaries dropped: element type disabled in dialog");
+				Logger::instance().debug() << "Dropping IFC-authored space boundary id=" << sb->m_id
 								   << " (related element type " << (int)betype
 								   << " disabled in dialog)";
 				continue;
@@ -2510,7 +2528,7 @@ bool Space::evaluateSpaceBoundaryFromIFC(const objectShapeTypeVector_t& shapes,
 				m_spaceBoundaries.end());
 		}
 		if(coalescedGroups > 0)
-			Logger::instance() << "coalesce: space=" << m_id
+			Logger::instance().debug() << "coalesce: space=" << m_id
 							   << " merged " << coalescedGroups << " same-element coplanar groups"
 							   << " (dropped " << droppedSBs << " fragmented SBs)";
 	}
@@ -2844,7 +2862,8 @@ void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
 		// Snap only when the shell keeps a substantial part of the SB — grazing
 		// overlaps (e.g. an SB from the room above touching this shell) stay put.
 		if(pieces.empty() || totalClipArea < 0.3 * s.area()) {
-			Logger::instance() << "anchorShell: space=" << m_id
+			Logger::instance().count("shell anchoring: space boundaries not snapped");
+			Logger::instance().debug() << "anchorShell: space=" << m_id
 							   << " NOT-SNAPPED sb='" << sb->m_name << "'"
 							   << " area=" << s.area()
 							   << " pieces=" << pieces.size()
@@ -2916,7 +2935,7 @@ void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
 				clone->m_openingId = openingSB->m_openingId;
 				parts[opi].m_piece->addContainedOpeningSpaceBoundaries(clone);
 			}
-			Logger::instance() << "anchor-shell: SPLIT opening SB '" << openingSB->m_name
+			Logger::instance().debug() << "anchor-shell: SPLIT opening SB '" << openingSB->m_name
 							   << "' across " << parts.size() << " wall pieces";
 		}
 	}
@@ -2996,7 +3015,7 @@ void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
 			}
 		}
 		if(deoverlapped > 0)
-			Logger::instance() << "anchorShell: space=" << m_id
+			Logger::instance().debug() << "anchorShell: space=" << m_id
 							   << " de-overlapped " << deoverlapped << " SBs (" << emptied << " emptied)";
 	}
 
@@ -3312,12 +3331,12 @@ void Space::anchorSpaceBoundariesToShell(const ConvertOptions& convertOptions) {
 			}
 		}
 		if(gapLoops > 0)
-			Logger::instance() << "anchorShell: space=" << m_id
+			Logger::instance().debug() << "anchorShell: space=" << m_id
 							   << " closed " << gapLoops << " gap loops (area=" << gapArea << ")";
 	}
 
 	if(snapped > 0 || !fillSBs.empty())
-		Logger::instance() << "anchorShell: space=" << m_id
+		Logger::instance().debug() << "anchorShell: space=" << m_id
 						   << " snapped=" << snapped << "/" << m_spaceBoundaries.size() - fillSBs.size()
 						   << " filled=" << fillSBs.size()
 						   << " fillArea=" << filledArea;

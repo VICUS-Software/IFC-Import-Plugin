@@ -554,7 +554,7 @@ void BuildingElement::transform(std::shared_ptr<ProductShapeData> productShape) 
 			const double tx = transformMatrix.v[12];
 			const double ty = transformMatrix.v[13];
 			const double tz = transformMatrix.v[14];
-			Logger::instance() << "transform '" << m_name << "_" << m_id
+			Logger::instance().debug() << "transform '" << m_name << "_" << m_id
 							   << "' T=(" << tx << "," << ty << "," << tz
 							   << ") preBBox=(" << preMin.m_x << "," << preMin.m_y
 							   << "," << preMin.m_z << ")-(" << preMax.m_x << ","
@@ -596,7 +596,8 @@ void BuildingElement::findSurfacePairs(double eps) {
 	// thickness-based side classification is meaningless for them anyway — skip it.
 	const size_t kMaxSurfacesForPairing = 5000;
 	if(m_surfaces.size() > kMaxSurfacesForPairing) {
-		Logger::instance() << "findSurfacePairs: SKIP element id=" << m_id << " name='" << m_name
+		Logger::instance().count("elements: side-pair search skipped (>5000 faces)");
+		Logger::instance().debug() << "findSurfacePairs: SKIP element id=" << m_id << " name='" << m_name
 						   << "' — too many surfaces (" << m_surfaces.size() << " > "
 						   << kMaxSurfacesForPairing << ") for O(n^2) parallel pairing (avoids memory blow-up)";
 		return;
@@ -654,13 +655,15 @@ void BuildingElement::findSurfacePairs(double eps) {
 		if(bestI >= 0 && bestJ >= 0) {
 			m_possibleSideSurfaces.push_back(bestI);
 			m_possibleSideSurfaces.push_back(bestJ);
-			Logger::instance() << "findSurfacePairs: thickness-based side pair not found for element id="
+			Logger::instance().count("elements: no side pair matching layer thickness (largest parallel pair used)");
+			Logger::instance().debug() << "findSurfacePairs: thickness-based side pair not found for element id="
 							   << m_id << " name='" << m_name << "' thickness=" << thickness
 							   << " — using largest-area parallel pair (indices " << bestI
 							   << "," << bestJ << " combined area=" << bestArea << ")";
 		}
 		else {
-			Logger::instance() << "findSurfacePairs: no parallel pair at all for element id="
+			Logger::instance().count("elements: no parallel face pair at all");
+			Logger::instance().debug() << "findSurfacePairs: no parallel pair at all for element id="
 							   << m_id << " name='" << m_name << "' surfaces=" << m_surfaces.size();
 		}
 	}
@@ -877,14 +880,16 @@ VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions&
 
 	const std::vector<IBKMK::Vector3D>& polyVect = s.polygon();
 	if(polyVect.size() < 3) {
-		Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
+		Logger::instance().count("element faces skipped: less than 3 vertices");
+		Logger::instance().debug() << "element face '" << s.name() << "' (id " << s.id()
 			<< ") has less than 3 vertices - skipping";
 		return vsurf;
 	}
 
 	IBKMK::Polygon3D poly3D(polyVect);
 	if(!poly3D.isValid()) {
-		Logger::instance() << "Warning: Surface '" << s.name() << "' (id " << s.id()
+		Logger::instance().count("element faces skipped: invalid 3D polygon");
+		Logger::instance().debug() << "element face '" << s.name() << "' (id " << s.id()
 			<< ") has invalid 3D polygon - skipping";
 		return vsurf;
 	}
@@ -913,14 +918,16 @@ VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions&
 
 		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
 		if(poly2D.size() < 3) {
-			Logger::instance() << "Warning: SubSurface '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().count("element subsurfaces skipped: less than 3 vertices");
+			Logger::instance().debug() << "element subsurface '" << sub.name() << "' (id " << sub.id()
 				<< ") has less than 3 vertices - skipping";
 			continue;
 		}
 
 		VICUS::Polygon2D vicusPoly2D(poly2D);
 		if(!vicusPoly2D.isValid()) {
-			Logger::instance() << "Warning: SubSurface '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().count("element subsurfaces skipped: invalid 2D polygon");
+			Logger::instance().debug() << "element subsurface '" << sub.name() << "' (id " << sub.id()
 				<< ") has invalid 2D polygon - skipping";
 			continue;
 		}
@@ -943,14 +950,16 @@ VICUS::Surface ifccSurfaceToVicusSurface(const Surface& s, const ConvertOptions&
 
 		const std::vector<IBKMK::Vector2D>& poly2D = sub.polygon();
 		if(poly2D.size() < 3) {
-			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().count("element holes skipped: less than 3 vertices");
+			Logger::instance().debug() << "element hole '" << sub.name() << "' (id " << sub.id()
 				<< ") has less than 3 vertices - skipping";
 			continue;
 		}
 
 		VICUS::Polygon2D vicusPoly2D(poly2D);
 		if(!vicusPoly2D.isValid()) {
-			Logger::instance() << "Warning: Hole '" << sub.name() << "' (id " << sub.id()
+			Logger::instance().count("element holes skipped: invalid 2D polygon");
+			Logger::instance().debug() << "element hole '" << sub.name() << "' (id " << sub.id()
 				<< ") has invalid 2D polygon - skipping";
 			continue;
 		}
@@ -1054,7 +1063,8 @@ static std::vector<CoplanarUnionRing> mergeCoplanarFaces(const std::vector<Surfa
 					}
 				}
 				if(!recovered) {
-					Logger::instance() << "shadingExport merge: dropping group — PlaneNormal"
+					Logger::instance().count("shading: coplanar group dropped (plane unrecoverable)");
+					Logger::instance().debug() << "shadingExport merge: dropping group — PlaneNormal"
 									   << " unrecoverable via vertex rotation ("
 									   << poly.size() << " verts)";
 					groups.pop_back();
@@ -1096,7 +1106,8 @@ static std::vector<CoplanarUnionRing> mergeCoplanarFaces(const std::vector<Surfa
 		}
 	}
 	if(fallbackGroups > 0)
-		Logger::instance() << "shadingExport merge: " << fallbackGroups
+		Logger::instance().count("shading: coplanar groups kept unmerged (clipper empty)", fallbackGroups);
+		Logger::instance().debug() << "shadingExport merge: " << fallbackGroups
 						   << "/" << groups.size() << " coplanar groups fell back to"
 						   << " raw input (clipper returned empty)";
 	return result;
@@ -1119,7 +1130,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 	VICUS::Surface vsurf;
 
 	if(ring.m_outer2D.size() < 3 || ring.m_outer.size() < 3) {
-		Logger::instance() << "shadingExport skip: outer ring '" << name
+		Logger::instance().count("shading: rings skipped (invalid geometry)");
+		Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 						   << "' (id " << surfaceId << ") has "
 						   << ring.m_outer2D.size() << " verts (2D)";
 		return vsurf;
@@ -1130,7 +1142,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 		Surface tmp(ring.m_outer);
 		const double a = tmp.area();
 		if(a < options.m_minimumSurfaceArea) {
-			Logger::instance() << "shadingExport skip: outer ring '" << name
+			Logger::instance().count("shading: rings below minimum area");
+			Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 							   << "' (id " << surfaceId << ") area=" << a
 							   << " below minimum " << options.m_minimumSurfaceArea;
 			return vsurf;
@@ -1145,7 +1158,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 	IBKMK::Vector3D normal = ring.m_planeNormal;
 	const double nMag = normal.magnitude();
 	if(nMag < 1e-12) {
-		Logger::instance() << "shadingExport skip: outer ring '" << name
+		Logger::instance().count("shading: rings skipped (invalid geometry)");
+		Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 						   << "' (id " << surfaceId << ") degenerate plane normal";
 		return vsurf;
 	}
@@ -1154,7 +1168,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 			- normal * ring.m_planeLocalX.scalarProduct(normal);
 	const double lxMag = localX.magnitude();
 	if(lxMag < 1e-9) {
-		Logger::instance() << "shadingExport skip: outer ring '" << name
+		Logger::instance().count("shading: rings skipped (invalid geometry)");
+		Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 						   << "' (id " << surfaceId << ") localX collapsed to zero after orthogonalization";
 		return vsurf;
 	}
@@ -1193,7 +1208,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 			if(i > 0) vertsStr << " | ";
 			vertsStr << "(" << outerShifted[i].m_x << "," << outerShifted[i].m_y << ")";
 		}
-		Logger::instance() << "shadingExport skip: outer ring '" << name
+		Logger::instance().count("shading: rings skipped (invalid geometry)");
+		Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 						   << "' (id " << surfaceId << ") 2D polyline invalid ("
 						   << outerShifted.size() << " verts, " << ring.m_holes.size()
 						   << " holes) all=[" << vertsStr.str() << "]";
@@ -1202,7 +1218,8 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 
 	IBKMK::Polygon3D poly3D(outer2D, offset3D, normal, localX);
 	if(!poly3D.isValid()) {
-		Logger::instance() << "shadingExport skip: outer ring '" << name
+		Logger::instance().count("shading: rings skipped (invalid geometry)");
+		Logger::instance().debug() << "shadingExport skip: outer ring '" << name
 						   << "' (id " << surfaceId
 						   << ") explicit-basis Polygon3D invalid — offset=("
 						   << offset3D.m_x << "," << offset3D.m_y << "," << offset3D.m_z
@@ -1251,7 +1268,7 @@ VICUS::Surface mergedRingToVicusSurface(const CoplanarUnionRing& ring,
 		vicusHoles.push_back(vh);
 	}
 	if(holesDropped > 0)
-		Logger::instance() << "shadingExport surface '" << name
+		Logger::instance().debug() << "shadingExport surface '" << name
 						   << "' (id " << surfaceId << "): "
 						   << holesDropped << "/" << ring.m_holes.size()
 						   << " holes dropped (invalid 2D polygon)";
@@ -1292,7 +1309,7 @@ VICUS::ShadingObject BuildingElement::getVicusShadingObject(const ConvertOptions
 					if(p.m_z > bbMax.m_z) bbMax.m_z = p.m_z;
 				}
 			}
-			Logger::instance() << "shadingExport bbox '" << m_name << "_" << m_id
+			Logger::instance().debug() << "shadingExport bbox '" << m_name << "_" << m_id
 							   << "' min=(" << bbMin.m_x << "," << bbMin.m_y << "," << bbMin.m_z
 							   << ") max=(" << bbMax.m_x << "," << bbMax.m_y << "," << bbMax.m_z
 							   << ") faces=" << m_surfaces.size();
@@ -1309,7 +1326,7 @@ VICUS::ShadingObject BuildingElement::getVicusShadingObject(const ConvertOptions
 		// Per-element summary — spots cases where a wall's front/back is silently gone.
 		// In=raw Carve faces, merged=rings after coplanar union, out=surfaces that made it.
 		if(merged.size() != vicusSurfaces.size()) {
-			Logger::instance() << "shadingExport element '"
+			Logger::instance().debug() << "shadingExport element '"
 							   << m_name << "_" << m_id << "' in=" << m_surfaces.size()
 							   << " merged=" << merged.size()
 							   << " out=" << vicusSurfaces.size()
@@ -1420,7 +1437,11 @@ void BuildingElement::appendMeshWithOpenings(const std::map<int, const Opening*>
 				}
 			}
 		}
-		{
+		if(!faceFinite)
+			Logger::instance().count("mesh faces skipped: non-finite coordinates");
+		if(facePinched)
+			Logger::instance().count("mesh faces: pinched (coincident vertices)");
+		if(Logger::instance().enabled(Logger::L_Debug)) {
 			std::stringstream diag;
 			diag << "meshFace elem='" << m_name << "' surf=" << probe.id()
 				 << " verts=" << probe.polygon().size();
@@ -1446,7 +1467,7 @@ void BuildingElement::appendMeshWithOpenings(const std::map<int, const Opening*>
 				diag << " SKIPPED non-finite";
 			if(facePinched)
 				diag << " SKIPPED pinched (coincident vertices)";
-			Logger::instance() << diag.str();
+			Logger::instance().debug() << diag.str();
 		}
 		if(!faceFinite)
 			continue;
@@ -1546,7 +1567,8 @@ void BuildingElement::appendMeshWithOpenings(const std::map<int, const Opening*>
 				}
 			}
 			if(facesToMesh.empty()) {
-				Logger::instance() << "meshFace SKIPPED degenerate (ring repair failed) elem='"
+				Logger::instance().count("mesh faces skipped: degenerate ring (repair failed)");
+				Logger::instance().debug() << "meshFace SKIPPED degenerate (ring repair failed) elem='"
 					<< m_name << "' surf=" << probe.id();
 				continue;
 			}
@@ -1614,7 +1636,8 @@ void BuildingElement::appendMeshWithOpenings(const std::map<int, const Opening*>
 				}
 			}
 			catch(std::exception& ex) {
-				Logger::instance() << "meshFace triangulation failed elem='" << m_name
+				Logger::instance().count("mesh faces skipped: triangulation failed");
+				Logger::instance().debug() << "meshFace triangulation failed elem='" << m_name
 					<< "' surf=" << face.id() << " : " << ex.what();
 			}
 		}
