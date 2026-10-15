@@ -1378,9 +1378,11 @@ namespace IFCC {
 				vec3& poly_point = poly_vert.v;
 
 				// points below the base surface are projected into plane
+				// The ray direction is a unit vector, so the parallel check compares a cosine and needs a dimensionless
+				// tolerance - not the (length) coplanar distance epsilon.
 				vec3 v;
 				double t;
-				carve::IntersectionClass intersect = carve::geom3d::rayPlaneIntersection( base_surface_plane, poly_point, poly_point + boundary_plane_normal, v, t, CARVE_EPSILON );
+				carve::IntersectionClass intersect = carve::geom3d::rayPlaneIntersection( base_surface_plane, poly_point, poly_point + boundary_plane_normal, v, t, EPS_M6 );
 				if( intersect > 0 )
 				{
 					if( agreement_check > 0 )

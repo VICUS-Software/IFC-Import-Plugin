@@ -465,13 +465,11 @@ GeometryConverter::~GeometryConverter() {}
 		std::vector<shared_ptr<IfcObjectDefinition> > vec_object_definitions;
 		const double length_in_meter = m_representation_converter->getUnitConverter()->getLengthInMeterFactor();
 		setCsgEps(1.5e-08 * length_in_meter);
-		if( std::abs(length_in_meter) > EPS_M14 )
-		{
-			double eps = m_geom_settings->getEpsilonCoplanarDistance();
-			eps /= length_in_meter;
-			m_geom_settings->setEpsilonCoplanarDistance(eps);
-			m_geom_settings->setEpsilonCoplanarAngle(eps * 0.1);
-		}
+		// The PointConverter already scales all coordinates to meters, so the coplanar distance epsilon is in meters, too,
+		// and must not be scaled by the file's length unit. Dividing by length_in_meter turned the 1 mm default into 1 m
+		// for millimetre files, which broke e.g. the projection of IfcPolygonalBoundedHalfSpace solids (SmallOffice lobby).
+		double eps = m_geom_settings->getEpsilonCoplanarDistance();
+		m_geom_settings->setEpsilonCoplanarAngle(eps * 0.1);
 
 		const std::map<int, shared_ptr<BuildingEntity> >& map_entities = m_ifc_model->getMapIfcEntities();
 		if (map_entities.size() > 0) {
